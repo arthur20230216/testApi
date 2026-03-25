@@ -6,9 +6,9 @@ Wants=network.target
 [Service]
 Type=simple
 User=www-data
-WorkingDirectory=/opt/projects/modelprobe/backend
-EnvironmentFile=/opt/projects/modelprobe/backend/.env
-ExecStart=/opt/projects/modelprobe/backend/modelprobe-server
+WorkingDirectory=/opt/modelprobe/backend
+EnvironmentFile=/opt/modelprobe/backend/.env
+ExecStart=/opt/modelprobe/backend/modelprobe-server
 Restart=always
 RestartSec=5
 

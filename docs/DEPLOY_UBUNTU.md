@@ -4,7 +4,7 @@
 
 当前推荐部署原则：
 
-- 项目统一放在 `/opt/projects/`
+- 项目放在 `/opt/modelprobe`
 - PostgreSQL 使用 Docker 部署
 - PostgreSQL 只初始化一次
 - 后续更多是执行前后端部署
@@ -18,9 +18,9 @@
 ### 第一次部署
 
 ```bash
-cd /opt/projects
+cd /opt
 git clone https://github.com/arthur20230216/testApi.git modelprobe
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 
 cp deploy/postgres.env.example deploy/postgres.env
 vim deploy/postgres.env
@@ -31,15 +31,15 @@ vim backend/.env
 chmod +x deploy/scripts/init_postgres_once.sh
 chmod +x deploy/scripts/deploy_app.sh
 
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
+APP_ROOT=/opt/modelprobe ./deploy/scripts/init_postgres_once.sh
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 ```
 
 ### 后续更新
 
 ```bash
-cd /opt/projects/modelprobe
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+cd /opt/modelprobe
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh
 ```
 
 ### 记住一个原则
@@ -123,13 +123,13 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
 统一放在：
 
 ```text
-/opt/projects/modelprobe
+/opt/modelprobe
 ```
 
 部署完成后的主要结构：
 
 ```text
-/opt/projects/modelprobe/
+/opt/modelprobe/
 ├─ backend/
 │  ├─ .env
 │  └─ modelprobe-server
@@ -140,27 +140,21 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
 
 这样做的好处是：
 
-- `/opt/projects/` 适合放多个项目
+- 路径简单，操作时更直接
 - 不会和 `/var/www` 的传统静态目录混在一起
-- 后续多项目部署时路径更统一
+- 对单项目部署来说更省心
 
-### 多项目建议
+### 如果以后要上多个项目
 
-如果你后面还会部署多个项目，建议统一这样组织：
+你这次已经决定把当前项目放在 `/opt/modelprobe`，那就按这个来。
+
+如果以后项目明显增多，再考虑切成：
 
 ```text
-/opt/projects/
-├─ modelprobe/
-├─ another-project/
-└─ some-admin/
+/opt/projects/<project-name>
 ```
 
-这样每个项目都可以沿用同样的习惯：
-
-- 代码目录在 `/opt/projects/<project-name>`
-- systemd 指向项目自己的 backend 目录
-- Nginx 指向项目自己的 frontend/dist
-- PostgreSQL 容器单独命名，避免互相冲突
+但以当前这个项目来说，先用 `/opt/modelprobe` 更直接。
 
 ## 3. 前置条件
 
@@ -232,17 +226,15 @@ nginx -v
 ## 5. 拉取项目
 
 ```bash
-sudo mkdir -p /opt/projects
-sudo chown -R $USER:$USER /opt/projects
-cd /opt/projects
+cd /opt
 git clone https://github.com/arthur20230216/testApi.git modelprobe
-cd modelprobe
+cd /opt/modelprobe
 ```
 
 后续更新代码：
 
 ```bash
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 git pull origin main
 ```
 
@@ -257,7 +249,7 @@ git pull origin main
 ### 6.1 准备 PostgreSQL 环境文件
 
 ```bash
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 cp deploy/postgres.env.example deploy/postgres.env
 ```
 
@@ -276,9 +268,9 @@ POSTGRES_PASSWORD=your-strong-password
 ### 6.2 执行数据库初始化脚本
 
 ```bash
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 chmod +x deploy/scripts/init_postgres_once.sh
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
+APP_ROOT=/opt/modelprobe ./deploy/scripts/init_postgres_once.sh
 ```
 
 这个脚本会：
@@ -307,7 +299,7 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
 复制并编辑：
 
 ```bash
-cd /opt/projects/modelprobe/backend
+cd /opt/modelprobe/backend
 cp .env.example .env
 ```
 
@@ -331,9 +323,9 @@ ALLOW_ORIGIN=http://your-domain-or-ip
 第一次执行：
 
 ```bash
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 chmod +x deploy/scripts/deploy_app.sh
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 ```
 
 这个脚本会完成：
@@ -358,7 +350,7 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 - 更新 systemd 服务运行文件
 - 更新 Nginx 实际服务内容
 
-也就是说，真正日常高频操作不是数据库，而是这个脚本。
+真正日常高频操作不是数据库，而是这个脚本。
 
 ## 9. 手工拆解版说明
 
@@ -367,7 +359,7 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 ### 9.1 编译后端
 
 ```bash
-cd /opt/projects/modelprobe/backend
+cd /opt/modelprobe/backend
 go mod tidy
 go build -o modelprobe-server ./cmd/server
 ```
@@ -375,7 +367,7 @@ go build -o modelprobe-server ./cmd/server
 ### 9.2 手工测试后端
 
 ```bash
-cd /opt/projects/modelprobe/backend
+cd /opt/modelprobe/backend
 set -a
 source .env
 set +a
@@ -391,7 +383,7 @@ curl http://127.0.0.1:8080/api/health
 ### 9.3 配置 systemd
 
 ```bash
-sudo cp /opt/projects/modelprobe/deploy/systemd/modelprobe-backend.service /etc/systemd/system/
+sudo cp /opt/modelprobe/deploy/systemd/modelprobe-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable modelprobe-backend
 sudo systemctl start modelprobe-backend
@@ -407,7 +399,7 @@ journalctl -u modelprobe-backend -f
 ### 9.4 构建前端
 
 ```bash
-cd /opt/projects/modelprobe/frontend
+cd /opt/modelprobe/frontend
 npm ci
 printf "VITE_API_BASE_URL=/api\n" > .env.production
 npm run build
@@ -416,13 +408,13 @@ npm run build
 构建产物在：
 
 ```text
-/opt/projects/modelprobe/frontend/dist
+/opt/modelprobe/frontend/dist
 ```
 
 ### 9.5 配置 Nginx
 
 ```bash
-sudo cp /opt/projects/modelprobe/deploy/nginx/modelprobe.conf /etc/nginx/sites-available/modelprobe.conf
+sudo cp /opt/modelprobe/deploy/nginx/modelprobe.conf /etc/nginx/sites-available/modelprobe.conf
 sudo ln -sf /etc/nginx/sites-available/modelprobe.conf /etc/nginx/sites-enabled/modelprobe.conf
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
@@ -462,8 +454,8 @@ sudo certbot --nginx -d your-domain.com
 推荐直接执行：
 
 ```bash
-cd /opt/projects/modelprobe
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+cd /opt/modelprobe
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh
 ```
 
 这就是之后最常用的部署动作。
@@ -477,21 +469,21 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
 - 不要每次都手改 systemd 文件
 - 不要每次都手改 Nginx 配置
 
-这些都属于“第一次部署动作”，不是“日常发布动作”。
+这些都属于第一次部署动作，不是日常发布动作。
 
 ## 12. 手工更新部署流程
 
 如果你不想用脚本，也可以手工更新：
 
 ```bash
-cd /opt/projects/modelprobe
+cd /opt/modelprobe
 git pull origin main
 ```
 
 重建后端：
 
 ```bash
-cd /opt/projects/modelprobe/backend
+cd /opt/modelprobe/backend
 go mod tidy
 go build -o modelprobe-server ./cmd/server
 sudo systemctl restart modelprobe-backend
@@ -500,7 +492,7 @@ sudo systemctl restart modelprobe-backend
 重建前端：
 
 ```bash
-cd /opt/projects/modelprobe/frontend
+cd /opt/modelprobe/frontend
 npm ci
 npm run build
 sudo systemctl reload nginx
@@ -508,7 +500,7 @@ sudo systemctl reload nginx
 
 如果更新涉及数据库结构，需要额外执行新的 SQL 或 migration。
 
-## 13.1 数据库变更时怎么做
+## 12.1 数据库变更时怎么做
 
 如果以后某次更新涉及 PostgreSQL 表结构变化，建议这样处理：
 
@@ -542,43 +534,43 @@ journalctl -u modelprobe-backend -f
 检查前端：
 
 ```bash
-ls -lah /opt/projects/modelprobe/frontend/dist
+ls -lah /opt/modelprobe/frontend/dist
 sudo nginx -t
 ```
 
-## 14.1 常见误区
+## 14. 常见误区
 
 ### 误区一：每次更新都重跑 PostgreSQL 初始化
 
 不对。那是第一次动作，不是常规动作。
 
-### 误区二：项目继续放在 `/var/www`
+### 误区二：继续把部署路径写成旧目录
 
-不推荐。你已经明确后面可能有多个项目，放在 `/opt/projects` 更清楚。
+现在统一按 `/opt/modelprobe` 走，不要再混用旧路径。
 
 ### 误区三：后续更新还手工一条条执行
 
 可以，但没必要。后续更新应该尽量统一走：
 
 ```bash
-APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh
 ```
 
 ### 误区四：把数据库密码直接写死进 compose 文件
 
 不推荐。应该放在 `deploy/postgres.env`。
 
-## 14. 建议的上线顺序
+## 15. 建议的上线顺序
 
 1. 安装基础环境
-2. `git clone` 项目到 `/opt/projects/modelprobe`
+2. `git clone` 项目到 `/opt/modelprobe`
 3. 准备 `deploy/postgres.env`
 4. 执行一次 PostgreSQL 初始化脚本
 5. 准备 `backend/.env`
 6. 执行一次 `deploy_app.sh --first-time`
 7. 接入 HTTPS
 
-## 15. 当前部署边界
+## 16. 当前部署边界
 
 当前部署方案是简单、稳定、易排障的版本：
 

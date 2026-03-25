@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/projects/modelprobe}"
+APP_ROOT="${APP_ROOT:-/opt/modelprobe}"
 BRANCH="${BRANCH:-main}"
 FIRST_TIME=0
 

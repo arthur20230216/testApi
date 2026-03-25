@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/projects/modelprobe}"
+APP_ROOT="${APP_ROOT:-/opt/modelprobe}"
 COMPOSE_FILE="$APP_ROOT/deploy/docker-compose.postgres.yml"
 POSTGRES_ENV="$APP_ROOT/deploy/postgres.env"
 POSTGRES_ENV_EXAMPLE="$APP_ROOT/deploy/postgres.env.example"
