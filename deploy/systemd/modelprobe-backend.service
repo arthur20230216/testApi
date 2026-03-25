@@ -1,0 +1,16 @@
+[Unit]
+Description=Model Probe Backend
+After=network.target docker.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/modelprobe/backend
+EnvironmentFile=/var/www/modelprobe/backend/.env
+ExecStart=/var/www/modelprobe/backend/modelprobe-server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
