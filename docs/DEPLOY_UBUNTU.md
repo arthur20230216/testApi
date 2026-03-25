@@ -11,6 +11,42 @@
 - Go 后端在主机上编译并通过 systemd 常驻
 - 前端构建为静态文件，由 Nginx 提供访问并反向代理 `/api`
 
+## 0. 最快执行路径
+
+如果你只想先知道“第一次怎么做、以后怎么做”，可以直接看这里。
+
+### 第一次部署
+
+```bash
+cd /opt/projects
+git clone https://github.com/arthur20230216/testApi.git modelprobe
+cd /opt/projects/modelprobe
+
+cp deploy/postgres.env.example deploy/postgres.env
+vim deploy/postgres.env
+
+cp backend/.env.example backend/.env
+vim backend/.env
+
+chmod +x deploy/scripts/init_postgres_once.sh
+chmod +x deploy/scripts/deploy_app.sh
+
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
+```
+
+### 后续更新
+
+```bash
+cd /opt/projects/modelprobe
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+```
+
+### 记住一个原则
+
+- 数据库脚本只在第一次部署时跑
+- 以后主要跑的是应用部署脚本
+
 ## 1. 推荐脚本方案
 
 这个项目最适合用两类脚本，而不是一个把所有事情都塞进去的总脚本。
@@ -68,6 +104,20 @@
 1. `git pull`
 2. 跑 `deploy_app.sh`
 
+### 脚本选择总结
+
+| 场景 | 推荐脚本 | 是否高频 |
+|------|------|------|
+| 第一次把 PostgreSQL 跑起来 | `init_postgres_once.sh` | 否 |
+| 第一次完整上线应用 | `deploy_app.sh --first-time` | 否 |
+| 日常代码更新 | `deploy_app.sh` | 是 |
+| 仅检查数据库容器 | 不跑脚本，直接 `docker ps` / `docker logs` | 是 |
+
+结论很明确：
+
+- 最重要的脚本是 `deploy_app.sh`
+- PostgreSQL 初始化脚本只是第一次用一次
+
 ## 2. 目录约定
 
 统一放在：
@@ -93,6 +143,24 @@
 - `/opt/projects/` 适合放多个项目
 - 不会和 `/var/www` 的传统静态目录混在一起
 - 后续多项目部署时路径更统一
+
+### 多项目建议
+
+如果你后面还会部署多个项目，建议统一这样组织：
+
+```text
+/opt/projects/
+├─ modelprobe/
+├─ another-project/
+└─ some-admin/
+```
+
+这样每个项目都可以沿用同样的习惯：
+
+- 代码目录在 `/opt/projects/<project-name>`
+- systemd 指向项目自己的 backend 目录
+- Nginx 指向项目自己的 frontend/dist
+- PostgreSQL 容器单独命名，避免互相冲突
 
 ## 3. 前置条件
 
@@ -144,6 +212,22 @@ go version
 ```
 
 如果你使用其他 Go 1.25.x 版本，也可以。
+
+## 4.3 首次部署前检查
+
+第一次真正开始前，建议确认下面这些命令都能正常返回：
+
+```bash
+git --version
+docker --version
+docker compose version
+node -v
+npm -v
+go version
+nginx -v
+```
+
+如果这里有任何一个不通，先修环境，再继续部署。
 
 ## 5. 拉取项目
 
@@ -205,6 +289,15 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
 
 后面一般不需要重复执行。
 
+### 什么时候需要重跑这个脚本
+
+一般只有两种情况：
+
+1. 你重新建了一台新服务器
+2. 你删掉了 PostgreSQL 容器和数据卷，准备从头重建
+
+正常应用更新，不应该重复执行它。
+
 ## 7. 配置后端环境变量
 
 项目里已经提供示例文件：
@@ -254,6 +347,18 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 - 重载 Nginx
 
 如果脚本第一次发现 `backend/.env` 不存在，会自动复制模板并中止，等你补完配置再重跑即可。
+
+### 这个脚本为什么最重要
+
+因为它覆盖了后续大多数真实运维动作：
+
+- 拉代码
+- 构建后端
+- 构建前端
+- 更新 systemd 服务运行文件
+- 更新 Nginx 实际服务内容
+
+也就是说，真正日常高频操作不是数据库，而是这个脚本。
 
 ## 9. 手工拆解版说明
 
@@ -324,6 +429,23 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+### 9.6 首次部署后的验证
+
+建议第一次部署完成后，按顺序验证：
+
+```bash
+docker ps
+curl http://127.0.0.1:8080/api/health
+sudo systemctl status modelprobe-backend
+sudo nginx -t
+```
+
+如果前端已经通过 Nginx 暴露，还要额外确认：
+
+```bash
+curl http://127.0.0.1/
+```
+
 ## 10. HTTPS
 
 如果你有域名，建议使用 Certbot：
@@ -345,6 +467,17 @@ APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
 ```
 
 这就是之后最常用的部署动作。
+
+### 后续更新时不要再做的事
+
+后续普通更新时，不建议再做这些动作：
+
+- 不要重新初始化 PostgreSQL
+- 不要重复创建 `backend/.env`
+- 不要每次都手改 systemd 文件
+- 不要每次都手改 Nginx 配置
+
+这些都属于“第一次部署动作”，不是“日常发布动作”。
 
 ## 12. 手工更新部署流程
 
@@ -375,6 +508,21 @@ sudo systemctl reload nginx
 
 如果更新涉及数据库结构，需要额外执行新的 SQL 或 migration。
 
+## 13.1 数据库变更时怎么做
+
+如果以后某次更新涉及 PostgreSQL 表结构变化，建议这样处理：
+
+1. 先 `git pull`
+2. 先执行新的 SQL 或 migration
+3. 再执行 `deploy_app.sh`
+
+不要反过来。
+
+原因是：
+
+- 后端新代码可能依赖新的表结构
+- 先发代码后改表，容易短时间报错
+
 ## 13. 常用检查命令
 
 检查 PostgreSQL：
@@ -397,6 +545,28 @@ journalctl -u modelprobe-backend -f
 ls -lah /opt/projects/modelprobe/frontend/dist
 sudo nginx -t
 ```
+
+## 14.1 常见误区
+
+### 误区一：每次更新都重跑 PostgreSQL 初始化
+
+不对。那是第一次动作，不是常规动作。
+
+### 误区二：项目继续放在 `/var/www`
+
+不推荐。你已经明确后面可能有多个项目，放在 `/opt/projects` 更清楚。
+
+### 误区三：后续更新还手工一条条执行
+
+可以，但没必要。后续更新应该尽量统一走：
+
+```bash
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+```
+
+### 误区四：把数据库密码直接写死进 compose 文件
+
+不推荐。应该放在 `deploy/postgres.env`。
 
 ## 14. 建议的上线顺序
 
