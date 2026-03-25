@@ -23,10 +23,10 @@ git clone https://github.com/arthur20230216/testApi.git modelprobe
 cd /opt/modelprobe
 
 cp deploy/postgres.env.example deploy/postgres.env
-vim deploy/postgres.env
+nano deploy/postgres.env
 
 cp backend/.env.example backend/.env
-vim backend/.env
+nano backend/.env
 
 chmod +x deploy/scripts/init_postgres_once.sh
 chmod +x deploy/scripts/deploy_app.sh
@@ -256,7 +256,7 @@ cp deploy/postgres.env.example deploy/postgres.env
 编辑：
 
 ```bash
-vim deploy/postgres.env
+nano deploy/postgres.env
 ```
 
 至少修改：
