@@ -1,20 +1,85 @@
 # Ubuntu 部署文档
 
-本文档说明如何在 Ubuntu 服务器上从 Git 拉取项目并完成完整部署。
+本文档说明如何在 Ubuntu 服务器上，从 Git 拉取项目并完成完整部署。
 
-当前部署方式约定：
+当前推荐部署原则：
 
-- 代码从 GitHub 拉取
+- 项目统一放在 `/opt/projects/`
 - PostgreSQL 使用 Docker 部署
+- PostgreSQL 只初始化一次
+- 后续更多是执行前后端部署
 - Go 后端在主机上编译并通过 systemd 常驻
-- 前端使用 Vite 构建静态文件，由 Nginx 提供访问并反向代理 `/api`
+- 前端构建为静态文件，由 Nginx 提供访问并反向代理 `/api`
 
-## 1. 部署目标结构
+## 1. 推荐脚本方案
 
-部署完成后，服务器上的主要结构如下：
+这个项目最适合用两类脚本，而不是一个把所有事情都塞进去的总脚本。
+
+### 一次性脚本
+
+脚本：
+
+- `deploy/scripts/init_postgres_once.sh`
+
+用途：
+
+- 第一次启动 PostgreSQL Docker 容器
+- 等待 PostgreSQL ready
+- 初始化表结构
+
+为什么单独拆开：
+
+- PostgreSQL 属于基础设施，不是每次发版都要碰的东西
+- 数据库初始化和应用发布混在一起，后续容易误操作
+- 这个项目后面主要变化在前后端代码，不在数据库容器
+
+### 高频脚本
+
+脚本：
+
+- `deploy/scripts/deploy_app.sh`
+
+用途：
+
+- 拉取最新代码
+- 编译 Go 后端
+- 构建前端静态资源
+- 重启后端 systemd 服务
+- 重载 Nginx
+
+为什么这样设计：
+
+- 这才是后续最常用的动作
+- 每次更新基本都只跑这一个脚本
+- 第一次部署时可以增加 `--first-time`，顺便安装 systemd 和 Nginx 配置
+
+### 最终建议
+
+第一次部署：
+
+1. 安装环境
+2. `git clone`
+3. 跑一次 `init_postgres_once.sh`
+4. 配置后端 `.env`
+5. 跑一次 `deploy_app.sh --first-time`
+
+后续更新：
+
+1. `git pull`
+2. 跑 `deploy_app.sh`
+
+## 2. 目录约定
+
+统一放在：
 
 ```text
-/var/www/modelprobe/
+/opt/projects/modelprobe
+```
+
+部署完成后的主要结构：
+
+```text
+/opt/projects/modelprobe/
 ├─ backend/
 │  ├─ .env
 │  └─ modelprobe-server
@@ -23,7 +88,13 @@
 └─ deploy/
 ```
 
-## 2. 前置条件
+这样做的好处是：
+
+- `/opt/projects/` 适合放多个项目
+- 不会和 `/var/www` 的传统静态目录混在一起
+- 后续多项目部署时路径更统一
+
+## 3. 前置条件
 
 建议系统版本：
 
@@ -36,9 +107,9 @@
 - 2 GB 内存
 - 20 GB 磁盘
 
-## 3. 安装基础软件
+## 4. 安装基础软件
 
-### 3.1 安装 Git、Docker、Nginx、Node.js
+### 4.1 安装 Git、Docker、Nginx、Node.js
 
 ```bash
 sudo apt update
@@ -60,9 +131,7 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-### 3.2 安装 Go 1.25+
-
-推荐使用官方二进制包。下面以 `/usr/local/go` 为安装位置：
+### 4.2 安装 Go 1.25+
 
 ```bash
 cd /tmp
@@ -76,12 +145,12 @@ go version
 
 如果你使用其他 Go 1.25.x 版本，也可以。
 
-## 4. 拉取项目
+## 5. 拉取项目
 
 ```bash
-sudo mkdir -p /var/www
-sudo chown -R $USER:$USER /var/www
-cd /var/www
+sudo mkdir -p /opt/projects
+sudo chown -R $USER:$USER /opt/projects
+cd /opt/projects
 git clone https://github.com/arthur20230216/testApi.git modelprobe
 cd modelprobe
 ```
@@ -89,52 +158,52 @@ cd modelprobe
 后续更新代码：
 
 ```bash
-cd /var/www/modelprobe
+cd /opt/projects/modelprobe
 git pull origin main
 ```
 
-如果默认分支不是 `main`，把命令里的分支名替换成实际分支。
+## 6. 第一次初始化 PostgreSQL
 
-## 5. 启动 PostgreSQL 容器
-
-项目中已经提供了 Docker Compose 文件：
+项目里已经提供：
 
 - `deploy/docker-compose.postgres.yml`
+- `deploy/postgres.env.example`
+- `deploy/scripts/init_postgres_once.sh`
 
-先修改默认密码：
-
-```bash
-cd /var/www/modelprobe
-sed -i 's/change-me/your-strong-password/g' deploy/docker-compose.postgres.yml
-```
-
-启动 PostgreSQL：
+### 6.1 准备 PostgreSQL 环境文件
 
 ```bash
-docker compose -f deploy/docker-compose.postgres.yml up -d
+cd /opt/projects/modelprobe
+cp deploy/postgres.env.example deploy/postgres.env
 ```
 
-确认数据库已启动：
+编辑：
 
 ```bash
-docker ps
+vim deploy/postgres.env
 ```
 
-## 6. 初始化数据库
+至少修改：
 
-先创建数据库：
+```env
+POSTGRES_PASSWORD=your-strong-password
+```
+
+### 6.2 执行数据库初始化脚本
 
 ```bash
-docker exec -i modelprobe-postgres psql -U modelprobe -d postgres < backend/scripts/create_database.sql
+cd /opt/projects/modelprobe
+chmod +x deploy/scripts/init_postgres_once.sh
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/init_postgres_once.sh
 ```
 
-如果 `modelprobe` 数据库已经由容器环境变量自动创建，这一步可以跳过。
+这个脚本会：
 
-再初始化表结构：
+- 启动 PostgreSQL 容器
+- 等待数据库 ready
+- 初始化表结构
 
-```bash
-docker exec -i modelprobe-postgres psql -U modelprobe -d modelprobe < backend/scripts/init_postgres.sql
-```
+后面一般不需要重复执行。
 
 ## 7. 配置后端环境变量
 
@@ -145,7 +214,7 @@ docker exec -i modelprobe-postgres psql -U modelprobe -d modelprobe < backend/sc
 复制并编辑：
 
 ```bash
-cd /var/www/modelprobe/backend
+cd /opt/projects/modelprobe/backend
 cp .env.example .env
 ```
 
@@ -158,49 +227,66 @@ PROBE_TIMEOUT_MS=10000
 ALLOW_ORIGIN=http://your-domain-or-ip
 ```
 
-如果你通过 Nginx 同域部署前端，`ALLOW_ORIGIN` 可以直接填你的域名或公网 IP。
+如果你通过 Nginx 同域部署前端，`ALLOW_ORIGIN` 可以填你的域名或公网 IP。
 
-## 8. 构建并启动后端
+## 8. 第一次部署应用
 
-编译后端：
+项目里已经提供：
+
+- `deploy/scripts/deploy_app.sh`
+
+第一次执行：
 
 ```bash
-cd /var/www/modelprobe/backend
+cd /opt/projects/modelprobe
+chmod +x deploy/scripts/deploy_app.sh
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh --first-time
+```
+
+这个脚本会完成：
+
+- `git pull origin main`
+- 编译 Go 后端
+- 构建前端
+- 安装 systemd 配置
+- 安装 Nginx 配置
+- 重启后端
+- 重载 Nginx
+
+如果脚本第一次发现 `backend/.env` 不存在，会自动复制模板并中止，等你补完配置再重跑即可。
+
+## 9. 手工拆解版说明
+
+如果你不想直接跑脚本，也可以手工执行。下面是对应步骤。
+
+### 9.1 编译后端
+
+```bash
+cd /opt/projects/modelprobe/backend
 go mod tidy
 go build -o modelprobe-server ./cmd/server
 ```
 
-先手工启动测试：
+### 9.2 手工测试后端
 
 ```bash
-cd /var/www/modelprobe/backend
+cd /opt/projects/modelprobe/backend
 set -a
 source .env
 set +a
 ./modelprobe-server
 ```
 
-确认健康检查正常：
+健康检查：
 
 ```bash
 curl http://127.0.0.1:8080/api/health
 ```
 
-## 9. 配置 systemd 托管后端
-
-项目里已经提供 service 模板：
-
-- `deploy/systemd/modelprobe-backend.service`
-
-复制到 systemd：
+### 9.3 配置 systemd
 
 ```bash
-sudo cp /var/www/modelprobe/deploy/systemd/modelprobe-backend.service /etc/systemd/system/
-```
-
-启用并启动：
-
-```bash
+sudo cp /opt/projects/modelprobe/deploy/systemd/modelprobe-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable modelprobe-backend
 sudo systemctl start modelprobe-backend
@@ -210,104 +296,88 @@ sudo systemctl start modelprobe-backend
 
 ```bash
 sudo systemctl status modelprobe-backend
-```
-
-查看日志：
-
-```bash
 journalctl -u modelprobe-backend -f
 ```
 
-## 10. 构建前端
+### 9.4 构建前端
 
 ```bash
-cd /var/www/modelprobe/frontend
-cp .env.example .env.production
-```
-
-编辑 `frontend/.env.production`：
-
-```env
-VITE_API_BASE_URL=/api
-```
-
-然后构建：
-
-```bash
-npm install
+cd /opt/projects/modelprobe/frontend
+npm ci
+printf "VITE_API_BASE_URL=/api\n" > .env.production
 npm run build
 ```
 
 构建产物在：
 
 ```text
-/var/www/modelprobe/frontend/dist
+/opt/projects/modelprobe/frontend/dist
 ```
 
-## 11. 配置 Nginx
-
-项目里已经提供 Nginx 模板：
-
-- `deploy/nginx/modelprobe.conf`
-
-复制到 Nginx：
+### 9.5 配置 Nginx
 
 ```bash
-sudo cp /var/www/modelprobe/deploy/nginx/modelprobe.conf /etc/nginx/sites-available/modelprobe.conf
+sudo cp /opt/projects/modelprobe/deploy/nginx/modelprobe.conf /etc/nginx/sites-available/modelprobe.conf
 sudo ln -sf /etc/nginx/sites-available/modelprobe.conf /etc/nginx/sites-enabled/modelprobe.conf
 sudo rm -f /etc/nginx/sites-enabled/default
-```
-
-如果你有域名，把 `server_name _;` 改成你的域名。
-
-检查并重载：
-
-```bash
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 12. HTTPS
+## 10. HTTPS
 
-如果你有域名，建议用 Certbot：
+如果你有域名，建议使用 Certbot：
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your-domain.com
 ```
 
-## 13. 更新部署流程
+## 11. 后续常规更新流程
 
-以后每次从 Git 更新：
+后续一般不再碰 PostgreSQL。
+
+推荐直接执行：
 
 ```bash
-cd /var/www/modelprobe
+cd /opt/projects/modelprobe
+APP_ROOT=/opt/projects/modelprobe ./deploy/scripts/deploy_app.sh
+```
+
+这就是之后最常用的部署动作。
+
+## 12. 手工更新部署流程
+
+如果你不想用脚本，也可以手工更新：
+
+```bash
+cd /opt/projects/modelprobe
 git pull origin main
 ```
 
-重新构建后端：
+重建后端：
 
 ```bash
-cd /var/www/modelprobe/backend
+cd /opt/projects/modelprobe/backend
 go mod tidy
 go build -o modelprobe-server ./cmd/server
 sudo systemctl restart modelprobe-backend
 ```
 
-重新构建前端：
+重建前端：
 
 ```bash
-cd /var/www/modelprobe/frontend
-npm install
+cd /opt/projects/modelprobe/frontend
+npm ci
 npm run build
 sudo systemctl reload nginx
 ```
 
 如果更新涉及数据库结构，需要额外执行新的 SQL 或 migration。
 
-## 14. 常用检查命令
+## 13. 常用检查命令
 
-检查 PostgreSQL 容器：
+检查 PostgreSQL：
 
 ```bash
 docker ps
@@ -324,23 +394,21 @@ journalctl -u modelprobe-backend -f
 检查前端：
 
 ```bash
-ls -lah /var/www/modelprobe/frontend/dist
+ls -lah /opt/projects/modelprobe/frontend/dist
 sudo nginx -t
 ```
 
-## 15. 建议的上线顺序
+## 14. 建议的上线顺序
 
-1. 装基础环境
-2. `git clone` 项目
-3. 启动 PostgreSQL 容器
-4. 初始化数据库
-5. 配置并编译后端
-6. systemd 托管后端
-7. 构建前端
-8. 配置 Nginx
-9. 接入 HTTPS
+1. 安装基础环境
+2. `git clone` 项目到 `/opt/projects/modelprobe`
+3. 准备 `deploy/postgres.env`
+4. 执行一次 PostgreSQL 初始化脚本
+5. 准备 `backend/.env`
+6. 执行一次 `deploy_app.sh --first-time`
+7. 接入 HTTPS
 
-## 16. 当前部署边界
+## 15. 当前部署边界
 
 当前部署方案是简单、稳定、易排障的版本：
 
@@ -349,4 +417,4 @@ sudo nginx -t
 - 后端 systemd 常驻
 - 前端静态文件交给 Nginx
 
-这个方案很适合一台 Ubuntu 服务器快速上线。如果后面要做更完整的 CI/CD、灰度发布或多机部署，再考虑补完整的 Docker Compose 或 Kubernetes。
+这个方案很适合一台 Ubuntu 服务器快速上线。如果后面要做更完整的 CI/CD、灰度发布或多机部署，再考虑补更完整的容器化方案。

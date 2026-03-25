@@ -62,7 +62,7 @@ npm run dev
 
 当前后端使用 PostgreSQL。
 
-默认连接串通过 `DATABASE_URL` 注入，示例见 [backend/.env.example](./backend/.env.example)。初始化脚本在 [create_database.sql](./backend/scripts/create_database.sql) 和 [init_postgres.sql](./backend/scripts/init_postgres.sql)。
+默认连接串通过 `DATABASE_URL` 注入，示例见 [backend/.env.example](./backend/.env.example)。表结构初始化脚本在 [init_postgres.sql](./backend/scripts/init_postgres.sql)。
 
 ## API
 

@@ -23,19 +23,12 @@ go run ./cmd/server
 
 ## 初始化数据库
 
-先创建数据库：
-
-```bash
-psql -U postgres -h 127.0.0.1 -f backend/scripts/create_database.sql
-```
-
-再初始化表结构：
+推荐让 PostgreSQL 容器通过环境变量自动创建 `modelprobe` 数据库，再初始化表结构：
 
 ```bash
 psql -U postgres -h 127.0.0.1 -d modelprobe -f backend/scripts/init_postgres.sql
 ```
-
-也可以手动创建 `modelprobe` 数据库，然后再执行 `init_postgres.sql`。
+如果数据库还不存在，可以先手动创建一个 `modelprobe` 数据库。
 
 ## 环境变量
 

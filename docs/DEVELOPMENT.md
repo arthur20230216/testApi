@@ -235,7 +235,6 @@ npm run dev
 初始化脚本位于：
 
 ```text
-backend/scripts/create_database.sql
 backend/scripts/init_postgres.sql
 ```
 
