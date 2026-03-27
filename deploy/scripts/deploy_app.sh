@@ -4,6 +4,7 @@ set -euo pipefail
 APP_ROOT="${APP_ROOT:-/opt/modelprobe}"
 BRANCH="${BRANCH:-main}"
 FIRST_TIME=0
+SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 SUDO="sudo"
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
@@ -52,7 +53,9 @@ if [[ -n "$SUDO" ]]; then
 fi
 
 cd "$APP_ROOT"
-git pull origin "$BRANCH"
+if [[ "$SKIP_GIT_PULL" != "1" ]]; then
+  git pull origin "$BRANCH"
+fi
 
 if [[ ! -f "$APP_ROOT/backend/.env" ]]; then
   cp "$APP_ROOT/backend/.env.example" "$APP_ROOT/backend/.env"
