@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+var allowedModelsByChannel = map[string]map[string]struct{}{
+	"cc": {
+		"claude-sonnet-4.6": {},
+		"claude-opus-4.6":   {},
+	},
+	"codex": {
+		"gpt-5.4":       {},
+		"gpt-5.3-codex": {},
+	},
+}
+
 type ProbeRequest struct {
 	StationName         string `json:"stationName"`
 	GroupName           string `json:"groupName"`
@@ -16,6 +27,9 @@ type ProbeRequest struct {
 }
 
 func (r ProbeRequest) Validate() error {
+	channel := strings.ToLower(strings.TrimSpace(r.ClaimedChannel))
+	expectedModel := strings.ToLower(strings.TrimSpace(r.ExpectedModelFamily))
+
 	if strings.TrimSpace(r.StationName) == "" {
 		return fmt.Errorf("stationName is required")
 	}
@@ -36,12 +50,20 @@ func (r ProbeRequest) Validate() error {
 		return fmt.Errorf("apiKey is too long")
 	}
 
-	if len(strings.TrimSpace(r.ClaimedChannel)) > 80 {
-		return fmt.Errorf("claimedChannel is too long")
+	if channel == "" {
+		return fmt.Errorf("claimedChannel is required")
 	}
 
-	if len(strings.TrimSpace(r.ExpectedModelFamily)) > 80 {
-		return fmt.Errorf("expectedModelFamily is too long")
+	if _, ok := allowedModelsByChannel[channel]; !ok {
+		return fmt.Errorf("claimedChannel must be one of: cc, codex")
+	}
+
+	if expectedModel == "" {
+		return fmt.Errorf("expectedModelFamily is required")
+	}
+
+	if _, ok := allowedModelsByChannel[channel][expectedModel]; !ok {
+		return fmt.Errorf("expectedModelFamily is not valid for claimedChannel")
 	}
 
 	parsedURL, err := url.ParseRequestURI(strings.TrimSpace(r.BaseURL))

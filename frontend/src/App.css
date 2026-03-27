@@ -109,7 +109,8 @@
   font-weight: 600;
 }
 
-.form-panel input {
+.form-panel input,
+.form-panel select {
   width: 100%;
   margin-top: 8px;
   padding: 14px 16px;

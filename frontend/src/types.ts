@@ -58,6 +58,6 @@ export type ProbeForm = {
   groupName: string;
   baseUrl: string;
   apiKey: string;
-  claimedChannel: string;
+  claimedChannel: "cc" | "codex";
   expectedModelFamily: string;
 };

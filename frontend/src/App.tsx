@@ -5,13 +5,18 @@ import { apiGet, apiPost } from "./api";
 import type { ProbeForm, ProbeListResponse, ProbeResponse, RankingResponse } from "./types";
 import "./App.css";
 
+const channelModelMap: Record<string, string[]> = {
+  cc: ["claude-sonnet-4.6", "claude-opus-4.6"],
+  codex: ["gpt-5.4", "gpt-5.3-codex"],
+};
+
 const initialForm: ProbeForm = {
   stationName: "",
   groupName: "",
   baseUrl: "",
   apiKey: "",
   claimedChannel: "cc",
-  expectedModelFamily: "claude",
+  expectedModelFamily: "claude-sonnet-4.6",
 };
 
 function App() {
@@ -68,6 +73,17 @@ function App() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function updateChannel(channel: ProbeForm["claimedChannel"]) {
+    const models = channelModelMap[channel] ?? [];
+    setForm((current) => ({
+      ...current,
+      claimedChannel: channel,
+      expectedModelFamily: models[0] ?? "",
+    }));
+  }
+
+  const expectedModels = channelModelMap[form.claimedChannel] ?? [];
+
   return (
     <main className="shell">
       <section className="hero">
@@ -98,7 +114,7 @@ function App() {
         <form className="panel form-panel" onSubmit={handleSubmit}>
           <div className="panel-heading">
             <h2>发起探测</h2>
-            <p>后端默认命中 `/v1/models`，失败后回退到 `/models`。</p>
+            <p>只针对模型真伪做判断，重点识别 kiro / 反重力 / glm 等冒充风险。</p>
           </div>
 
           <label>
@@ -124,12 +140,21 @@ function App() {
           <div className="split">
             <label>
               宣称渠道
-              <input value={form.claimedChannel} onChange={(event) => updateField("claimedChannel", event.target.value)} placeholder="cc / gpt / glm" />
+              <select value={form.claimedChannel} onChange={(event) => updateChannel(event.target.value as ProbeForm["claimedChannel"])}>
+                <option value="cc">cc</option>
+                <option value="codex">codex</option>
+              </select>
             </label>
 
             <label>
-              期望家族
-              <input value={form.expectedModelFamily} onChange={(event) => updateField("expectedModelFamily", event.target.value)} placeholder="claude / gpt / glm" />
+              期望模型
+              <select value={form.expectedModelFamily} onChange={(event) => updateField("expectedModelFamily", event.target.value)}>
+                {expectedModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
@@ -143,7 +168,7 @@ function App() {
         <section className="panel result-panel">
           <div className="panel-heading">
             <h2>检测结果</h2>
-            <p>结论不是官方证明，而是基于协议和返回结果的技术判断。</p>
+            <p>结论基于模型列表核验，判断是否存在其他渠道模型冒充。</p>
           </div>
 
           {result ? (
@@ -159,16 +184,16 @@ function App() {
                   <strong>{result.probe.primaryFamily ?? "未识别"}</strong>
                 </article>
                 <article>
-                  <span>HTTP 状态</span>
+                  <span>期望模型</span>
+                  <strong>{result.probe.expectedModelFamily ?? "未设置"}</strong>
+                </article>
+                <article>
+                  <span>宣称渠道</span>
+                  <strong>{result.probe.claimedChannel ?? "未设置"}</strong>
+                </article>
+                <article>
+                  <span>接口状态</span>
                   <strong>{result.probe.httpStatus ?? "无响应"}</strong>
-                </article>
-                <article>
-                  <span>兼容 OpenAI</span>
-                  <strong>{result.probe.isOpenAiCompatible ? "是" : "否"}</strong>
-                </article>
-                <article>
-                  <span>响应耗时</span>
-                  <strong>{result.probe.responseTimeMs ? `${result.probe.responseTimeMs} ms` : "未知"}</strong>
                 </article>
               </div>
 

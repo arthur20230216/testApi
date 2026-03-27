@@ -45,6 +45,8 @@ var modelFamilyRules = []familyRule{
 	{Family: "mistral", Patterns: compilePatterns(`mistral`, `mixtral`)},
 	{Family: "llama", Patterns: compilePatterns(`llama`, `meta[- ]?llama`)},
 	{Family: "kimi", Patterns: compilePatterns(`kimi`, `moonshot`)},
+	{Family: "kiro", Patterns: compilePatterns(`kiro`)},
+	{Family: "antigravity", Patterns: compilePatterns(`anti[-_ ]?gravity`, `反重力`)},
 }
 
 var clearClaimMap = map[string]string{
@@ -62,6 +64,30 @@ var clearClaimMap = map[string]string{
 	"mistral":     "mistral",
 	"llama":       "llama",
 	"kimi":        "kimi",
+	"codex":       "gpt",
+}
+
+var expectedModelsByChannel = map[string][]string{
+	"cc": {
+		"claude-sonnet-4.6",
+		"claude-opus-4.6",
+	},
+	"codex": {
+		"gpt-5.4",
+		"gpt-5.3-codex",
+	},
+}
+
+var counterfeitFamilies = []string{
+	"kiro",
+	"antigravity",
+	"glm",
+	"qwen",
+	"deepseek",
+	"gemini",
+	"mistral",
+	"llama",
+	"kimi",
 }
 
 func NewProbeService(timeout time.Duration) *ProbeService {
@@ -211,10 +237,10 @@ func scoreProbe(
 ) (int, string, string, []string, []string) {
 	suspicionReasons := make([]string, 0)
 	notes := make([]string, 0)
-	score := 20
+	score := 25
 
 	if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 {
-		score += 20
+		score += 15
 		notes = append(notes, "模型列表接口已返回 2xx 响应")
 	} else if attempt.Status != nil && (*attempt.Status == 401 || *attempt.Status == 403) {
 		score -= 20
@@ -238,21 +264,38 @@ func scoreProbe(
 		score += 10
 		notes = append(notes, fmt.Sprintf("提取到 %d 个模型 ID", len(modelIDs)))
 	} else {
-		score -= 20
+		score -= 30
 		suspicionReasons = append(suspicionReasons, "没有从响应中提取到模型 ID")
 	}
 
 	if compatibility {
-		score += 15
+		score += 5
 		notes = append(notes, "响应形态符合 OpenAI `/models` 列表格式")
 	} else {
 		score -= 10
 		suspicionReasons = append(suspicionReasons, "响应不符合标准 OpenAI `/models` 列表结构")
 	}
 
-	clearClaim := normalizeClaim(claimedChannel)
-	expectedFamily := normalizeClaim(expectedModelFamily)
+	normalizedChannel := normalizeInput(claimedChannel)
+	expectedModel := normalizeInput(expectedModelFamily)
 	primaryFamily := inferPrimaryFamily(families)
+	declaredFamily := normalizeClaim(claimedChannel)
+
+	if expectedModel != nil {
+		if hasExpectedModel(modelIDs, *expectedModel) {
+			score += 30
+			notes = append(notes, "命中期望模型: "+*expectedModel)
+		} else {
+			score -= 35
+			suspicionReasons = append(suspicionReasons, "未检测到期望模型，疑似与宣称渠道不一致")
+		}
+	}
+
+	if normalizedChannel != nil {
+		if models, ok := expectedModelsByChannel[*normalizedChannel]; ok {
+			notes = append(notes, "该渠道允许模型: "+strings.Join(models, ", "))
+		}
+	}
 
 	if len(families) > 0 {
 		notes = append(notes, "检测到模型家族: "+strings.Join(families, ", "))
@@ -260,22 +303,20 @@ func scoreProbe(
 		suspicionReasons = append(suspicionReasons, "未能从模型 ID 或响应内容中识别出明确模型家族")
 	}
 
-	if expectedFamily != nil && primaryFamily != nil {
-		if *expectedFamily == *primaryFamily {
+	if declaredFamily != nil && primaryFamily != nil {
+		if *declaredFamily == *primaryFamily {
 			score += 10
-			notes = append(notes, "显式期望模型家族与检测结果一致: "+*primaryFamily)
+			notes = append(notes, "宣称渠道与主模型家族一致: "+*primaryFamily)
 		} else {
-			score -= 25
-			suspicionReasons = append(suspicionReasons, fmt.Sprintf("期望模型家族为 %s，实际更像 %s", *expectedFamily, *primaryFamily))
+			score -= 20
+			suspicionReasons = append(suspicionReasons, fmt.Sprintf("宣称渠道偏向 %s，但返回模型更像 %s", *declaredFamily, *primaryFamily))
 		}
-	} else if clearClaim != nil && primaryFamily != nil {
-		if *clearClaim == *primaryFamily {
-			score += 10
-			notes = append(notes, "站点宣称渠道与检测结果基本一致: "+*primaryFamily)
-		} else {
-			score -= 15
-			suspicionReasons = append(suspicionReasons, fmt.Sprintf("站点宣称偏向 %s，但返回模型更像 %s", *clearClaim, *primaryFamily))
-		}
+	}
+
+	fakeFamilies := findCounterfeitFamilies(families, declaredFamily)
+	if len(fakeFamilies) > 0 {
+		score -= 35
+		suspicionReasons = append(suspicionReasons, "检测到疑似冒充渠道模型: "+strings.Join(fakeFamilies, ", "))
 	}
 
 	if !strings.Contains(strings.ToLower(attempt.Headers["content-type"]), "application/json") {
@@ -434,6 +475,64 @@ func normalizeClaim(value *string) *string {
 	}
 
 	return &normalized
+}
+
+func normalizeInput(value *string) *string {
+	if value == nil {
+		return nil
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(*value))
+	if normalized == "" {
+		return nil
+	}
+
+	return &normalized
+}
+
+func hasExpectedModel(modelIDs []string, expectedModel string) bool {
+	if strings.TrimSpace(expectedModel) == "" {
+		return false
+	}
+
+	target := strings.ToLower(strings.TrimSpace(expectedModel))
+	for _, modelID := range modelIDs {
+		if strings.Contains(strings.ToLower(modelID), target) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func findCounterfeitFamilies(families []string, declaredFamily *string) []string {
+	if len(families) == 0 {
+		return []string{}
+	}
+
+	result := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, family := range families {
+		if declaredFamily != nil && family == *declaredFamily {
+			continue
+		}
+
+		for _, suspicious := range counterfeitFamilies {
+			if family != suspicious {
+				continue
+			}
+
+			if _, ok := seen[family]; ok {
+				break
+			}
+
+			seen[family] = struct{}{}
+			result = append(result, family)
+			break
+		}
+	}
+
+	return result
 }
 
 func normalizeBaseURL(baseURL string) string {
