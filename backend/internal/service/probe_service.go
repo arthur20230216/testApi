@@ -67,17 +67,6 @@ var clearClaimMap = map[string]string{
 	"codex":       "gpt",
 }
 
-var expectedModelsByChannel = map[string][]string{
-	"cc": {
-		"claude-sonnet-4.6",
-		"claude-opus-4.6",
-	},
-	"codex": {
-		"gpt-5.4",
-		"gpt-5.3-codex",
-	},
-}
-
 var counterfeitFamilies = []string{
 	"kiro",
 	"antigravity",
@@ -99,7 +88,7 @@ func NewProbeService(timeout time.Duration) *ProbeService {
 	}
 }
 
-func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest) (model.ProbeRecord, error) {
+func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, channelModels map[string][]string) (model.ProbeRecord, error) {
 	endpoints := buildModelEndpoints(input.BaseURL)
 	attempts := make([]probeAttempt, 0, len(endpoints))
 
@@ -119,6 +108,7 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest) (
 		compatibility,
 		nullableString(strings.TrimSpace(input.ClaimedChannel)),
 		nullableString(strings.TrimSpace(input.ExpectedModelFamily)),
+		channelModels,
 	)
 
 	return model.ProbeRecord{
@@ -234,6 +224,7 @@ func scoreProbe(
 	compatibility bool,
 	claimedChannel *string,
 	expectedModelFamily *string,
+	channelModels map[string][]string,
 ) (int, string, string, []string, []string) {
 	suspicionReasons := make([]string, 0)
 	notes := make([]string, 0)
@@ -292,8 +283,10 @@ func scoreProbe(
 	}
 
 	if normalizedChannel != nil {
-		if models, ok := expectedModelsByChannel[*normalizedChannel]; ok {
+		if models, ok := channelModels[*normalizedChannel]; ok {
 			notes = append(notes, "该渠道允许模型: "+strings.Join(models, ", "))
+		} else {
+			suspicionReasons = append(suspicionReasons, "后台未配置该渠道的模型白名单")
 		}
 	}
 

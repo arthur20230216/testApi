@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"modelprobe/backend/internal/model"
@@ -77,11 +78,54 @@ func (r *PostgresRepository) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_probes_station_name ON probes(station_name);
 	CREATE INDEX IF NOT EXISTS idx_probes_group_name ON probes(group_name);
 	CREATE INDEX IF NOT EXISTS idx_probes_verdict ON probes(verdict);
+
+	CREATE TABLE IF NOT EXISTS channel_models (
+		id BIGSERIAL PRIMARY KEY,
+		channel_name TEXT NOT NULL,
+		model_id TEXT NOT NULL,
+		is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE(channel_name, model_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
+	CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
 	`
 
 	_, err := r.db.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("init schema: %w", err)
+	}
+
+	if err := r.seedDefaultChannelModels(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *PostgresRepository) seedDefaultChannelModels() error {
+	defaultPairs := []struct {
+		Channel string
+		ModelID string
+	}{
+		{Channel: "cc", ModelID: "claude-sonnet-4.6"},
+		{Channel: "cc", ModelID: "claude-opus-4.6"},
+		{Channel: "codex", ModelID: "gpt-5.4"},
+		{Channel: "codex", ModelID: "gpt-5.3-codex"},
+	}
+
+	for _, pair := range defaultPairs {
+		_, err := r.db.Exec(
+			`INSERT INTO channel_models (channel_name, model_id, is_enabled) VALUES ($1, $2, TRUE)
+			 ON CONFLICT(channel_name, model_id) DO NOTHING`,
+			pair.Channel,
+			pair.ModelID,
+		)
+		if err != nil {
+			return fmt.Errorf("seed channel model %s/%s: %w", pair.Channel, pair.ModelID, err)
+		}
 	}
 
 	return nil
@@ -230,6 +274,189 @@ func (r *PostgresRepository) GetRanking(ctx context.Context, scope string, limit
 	return model.RankingResponse{Red: red, Black: black}, nil
 }
 
+func (r *PostgresRepository) ListChannelModels(ctx context.Context) ([]model.ChannelModelEntry, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT id, channel_name, model_id, is_enabled, created_at, updated_at
+		 FROM channel_models
+		 ORDER BY channel_name ASC, model_id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel models: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.ChannelModelEntry, 0)
+	for rows.Next() {
+		var item model.ChannelModelEntry
+		var createdAt time.Time
+		var updatedAt time.Time
+		if err := rows.Scan(
+			&item.ID,
+			&item.ChannelName,
+			&item.ModelID,
+			&item.IsEnabled,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan channel model row: %w", err)
+		}
+
+		item.ChannelName = strings.ToLower(strings.TrimSpace(item.ChannelName))
+		item.ModelID = strings.ToLower(strings.TrimSpace(item.ModelID))
+		item.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+		item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetChannelModelMap(ctx context.Context, includeDisabled bool) (map[string][]string, error) {
+	whereEnabled := ""
+	if !includeDisabled {
+		whereEnabled = "WHERE is_enabled = TRUE"
+	}
+
+	rows, err := r.db.QueryContext(
+		ctx,
+		fmt.Sprintf(`SELECT channel_name, model_id FROM channel_models %s ORDER BY channel_name ASC, model_id ASC`, whereEnabled),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel model map: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var channel string
+		var modelID string
+		if err := rows.Scan(&channel, &modelID); err != nil {
+			return nil, fmt.Errorf("scan channel model map row: %w", err)
+		}
+
+		channel = strings.ToLower(strings.TrimSpace(channel))
+		modelID = strings.ToLower(strings.TrimSpace(modelID))
+		result[channel] = append(result[channel], modelID)
+	}
+
+	return result, rows.Err()
+}
+
+func (r *PostgresRepository) IsModelAllowedForChannel(ctx context.Context, channel string, modelID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+			SELECT 1
+			FROM channel_models
+			WHERE channel_name = $1 AND model_id = $2 AND is_enabled = TRUE
+		)`,
+		strings.ToLower(strings.TrimSpace(channel)),
+		strings.ToLower(strings.TrimSpace(modelID)),
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check channel model: %w", err)
+	}
+
+	return exists, nil
+}
+
+func (r *PostgresRepository) UpsertChannelModel(ctx context.Context, request model.ChannelModelUpsertRequest) (*model.ChannelModelEntry, error) {
+	normalized := request.Normalize()
+	row := r.db.QueryRowContext(
+		ctx,
+		`INSERT INTO channel_models (channel_name, model_id, is_enabled, updated_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT(channel_name, model_id)
+		 DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = NOW()
+		 RETURNING id, channel_name, model_id, is_enabled, created_at, updated_at`,
+		normalized.ChannelName,
+		normalized.ModelID,
+		normalized.IsEnabled,
+	)
+
+	var item model.ChannelModelEntry
+	var createdAt time.Time
+	var updatedAt time.Time
+	if err := row.Scan(
+		&item.ID,
+		&item.ChannelName,
+		&item.ModelID,
+		&item.IsEnabled,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("upsert channel model: %w", err)
+	}
+
+	item.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+	item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+	return &item, nil
+}
+
+func (r *PostgresRepository) DeleteChannelModel(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM channel_models WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete channel model: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete channel model rows affected: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func (r *PostgresRepository) UpdateProbeManual(ctx context.Context, id string, request model.ProbeManualUpdateRequest) (*model.ProbeRecord, error) {
+	modelIDsJSON, _ := json.Marshal(request.ModelIDs)
+	suspicionReasonsJSON, _ := json.Marshal(request.SuspicionReasons)
+	notesJSON, _ := json.Marshal(request.Notes)
+
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE probes
+		 SET
+			claimed_channel = $2,
+			expected_model_family = $3,
+			status = $4,
+			verdict = $5,
+			trust_score = $6,
+			primary_family = $7,
+			model_ids_json = $8::jsonb,
+			suspicion_reasons_json = $9::jsonb,
+			notes_json = $10::jsonb
+		 WHERE id = $1`,
+		id,
+		request.ClaimedChannel,
+		request.ExpectedModelFamily,
+		request.Status,
+		request.Verdict,
+		request.TrustScore,
+		nullableUpdateText(request.PrimaryFamily),
+		string(modelIDsJSON),
+		string(suspicionReasonsJSON),
+		string(notesJSON),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update probe manually: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("update probe rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, sql.ErrNoRows
+	}
+
+	return r.GetProbeByID(ctx, id)
+}
+
 func scanRankingRows(rows *sql.Rows) ([]model.RankingItem, error) {
 	items := make([]model.RankingItem, 0)
 
@@ -358,4 +585,12 @@ func nullIntPtr(value sql.NullInt64) *int {
 
 	copied := int(value.Int64)
 	return &copied
+}
+
+func nullableUpdateText(value string) any {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return nil
+	}
+	return normalized
 }

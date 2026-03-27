@@ -57,14 +57,25 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return requestJson<T>("POST", path, body);
+}
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  return requestJson<T>("PATCH", path, body);
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  return requestJson<T>("DELETE", path);
+}
+
+async function requestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(buildApiUrl(path), {
-    method: "POST",
+    method,
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-
   const payload = await readPayload(response);
 
   if (!response.ok) {

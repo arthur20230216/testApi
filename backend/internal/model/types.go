@@ -3,19 +3,9 @@ package model
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
-
-var allowedModelsByChannel = map[string]map[string]struct{}{
-	"cc": {
-		"claude-sonnet-4.6": {},
-		"claude-opus-4.6":   {},
-	},
-	"codex": {
-		"gpt-5.4":       {},
-		"gpt-5.3-codex": {},
-	},
-}
 
 type ProbeRequest struct {
 	StationName         string `json:"stationName"`
@@ -27,9 +17,6 @@ type ProbeRequest struct {
 }
 
 func (r ProbeRequest) Validate() error {
-	channel := strings.ToLower(strings.TrimSpace(r.ClaimedChannel))
-	expectedModel := strings.ToLower(strings.TrimSpace(r.ExpectedModelFamily))
-
 	if strings.TrimSpace(r.StationName) == "" {
 		return fmt.Errorf("stationName is required")
 	}
@@ -50,20 +37,12 @@ func (r ProbeRequest) Validate() error {
 		return fmt.Errorf("apiKey is too long")
 	}
 
-	if channel == "" {
+	if strings.TrimSpace(r.ClaimedChannel) == "" {
 		return fmt.Errorf("claimedChannel is required")
 	}
 
-	if _, ok := allowedModelsByChannel[channel]; !ok {
-		return fmt.Errorf("claimedChannel must be one of: cc, codex")
-	}
-
-	if expectedModel == "" {
+	if strings.TrimSpace(r.ExpectedModelFamily) == "" {
 		return fmt.Errorf("expectedModelFamily is required")
-	}
-
-	if _, ok := allowedModelsByChannel[channel][expectedModel]; !ok {
-		return fmt.Errorf("expectedModelFamily is not valid for claimedChannel")
 	}
 
 	parsedURL, err := url.ParseRequestURI(strings.TrimSpace(r.BaseURL))
@@ -125,4 +104,92 @@ type RankingItem struct {
 type RankingResponse struct {
 	Red   []RankingItem `json:"red"`
 	Black []RankingItem `json:"black"`
+}
+
+type ChannelModelEntry struct {
+	ID          int64  `json:"id"`
+	ChannelName string `json:"channelName"`
+	ModelID     string `json:"modelId"`
+	IsEnabled   bool   `json:"isEnabled"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+type ChannelModelListResponse struct {
+	Items []ChannelModelEntry `json:"items"`
+}
+
+type ChannelModelMapResponse struct {
+	Channels map[string][]string `json:"channels"`
+}
+
+type ChannelModelUpsertRequest struct {
+	ChannelName string `json:"channelName"`
+	ModelID     string `json:"modelId"`
+	IsEnabled   bool   `json:"isEnabled"`
+}
+
+func (r ChannelModelUpsertRequest) Normalize() ChannelModelUpsertRequest {
+	return ChannelModelUpsertRequest{
+		ChannelName: strings.ToLower(strings.TrimSpace(r.ChannelName)),
+		ModelID:     strings.ToLower(strings.TrimSpace(r.ModelID)),
+		IsEnabled:   r.IsEnabled,
+	}
+}
+
+func (r ChannelModelUpsertRequest) Validate() error {
+	normalized := r.Normalize()
+	if normalized.ChannelName == "" {
+		return fmt.Errorf("channelName is required")
+	}
+	if normalized.ModelID == "" {
+		return fmt.Errorf("modelId is required")
+	}
+	if len(normalized.ChannelName) > 80 {
+		return fmt.Errorf("channelName is too long")
+	}
+	if len(normalized.ModelID) > 120 {
+		return fmt.Errorf("modelId is too long")
+	}
+	return nil
+}
+
+type ProbeManualUpdateRequest struct {
+	ClaimedChannel      string   `json:"claimedChannel"`
+	ExpectedModelFamily string   `json:"expectedModelFamily"`
+	Status              string   `json:"status"`
+	Verdict             string   `json:"verdict"`
+	TrustScore          int      `json:"trustScore"`
+	PrimaryFamily       string   `json:"primaryFamily"`
+	ModelIDs            []string `json:"modelIds"`
+	SuspicionReasons    []string `json:"suspicionReasons"`
+	Notes               []string `json:"notes"`
+}
+
+func (r ProbeManualUpdateRequest) Validate() error {
+	r.ClaimedChannel = strings.ToLower(strings.TrimSpace(r.ClaimedChannel))
+	r.ExpectedModelFamily = strings.ToLower(strings.TrimSpace(r.ExpectedModelFamily))
+	r.Status = strings.ToLower(strings.TrimSpace(r.Status))
+	r.Verdict = strings.ToLower(strings.TrimSpace(r.Verdict))
+	r.PrimaryFamily = strings.ToLower(strings.TrimSpace(r.PrimaryFamily))
+
+	if r.ClaimedChannel == "" {
+		return fmt.Errorf("claimedChannel is required")
+	}
+	if r.ExpectedModelFamily == "" {
+		return fmt.Errorf("expectedModelFamily is required")
+	}
+	if len(r.ModelIDs) == 0 {
+		return fmt.Errorf("modelIds is required")
+	}
+	if r.TrustScore < 0 || r.TrustScore > 100 {
+		return fmt.Errorf("trustScore must be between 0 and 100")
+	}
+	if !slices.Contains([]string{"success", "auth_failed", "invalid_response", "request_failed"}, r.Status) {
+		return fmt.Errorf("status is invalid")
+	}
+	if !slices.Contains([]string{"trusted", "needs_review", "high_risk"}, r.Verdict) {
+		return fmt.Errorf("verdict is invalid")
+	}
+	return nil
 }

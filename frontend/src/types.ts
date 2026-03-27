@@ -58,6 +58,41 @@ export type ProbeForm = {
   groupName: string;
   baseUrl: string;
   apiKey: string;
-  claimedChannel: "cc" | "codex";
+  claimedChannel: string;
   expectedModelFamily: string;
+};
+
+export type ChannelModelMapResponse = {
+  channels: Record<string, string[]>;
+};
+
+export type ChannelModelEntry = {
+  id: number;
+  channelName: string;
+  modelId: string;
+  isEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChannelModelListResponse = {
+  items: ChannelModelEntry[];
+};
+
+export type ChannelModelUpsertRequest = {
+  channelName: string;
+  modelId: string;
+  isEnabled: boolean;
+};
+
+export type ProbeManualUpdateRequest = {
+  claimedChannel: string;
+  expectedModelFamily: string;
+  status: "success" | "auth_failed" | "invalid_response" | "request_failed";
+  verdict: ProbeRecord["verdict"];
+  trustScore: number;
+  primaryFamily: string;
+  modelIds: string[];
+  suspicionReasons: string[];
+  notes: string[];
 };

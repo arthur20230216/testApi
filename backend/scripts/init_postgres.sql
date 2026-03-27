@@ -29,3 +29,23 @@ CREATE INDEX IF NOT EXISTS idx_probes_created_at ON probes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_probes_station_name ON probes(station_name);
 CREATE INDEX IF NOT EXISTS idx_probes_group_name ON probes(group_name);
 CREATE INDEX IF NOT EXISTS idx_probes_verdict ON probes(verdict);
+
+CREATE TABLE IF NOT EXISTS channel_models (
+  id BIGSERIAL PRIMARY KEY,
+  channel_name TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(channel_name, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
+CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
+
+INSERT INTO channel_models(channel_name, model_id, is_enabled) VALUES
+  ('cc', 'claude-sonnet-4.6', TRUE),
+  ('cc', 'claude-opus-4.6', TRUE),
+  ('codex', 'gpt-5.4', TRUE),
+  ('codex', 'gpt-5.3-codex', TRUE)
+ON CONFLICT(channel_name, model_id) DO NOTHING;
