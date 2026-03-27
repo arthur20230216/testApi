@@ -200,8 +200,16 @@ cd /tmp
 wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf go1.25.0.linux-amd64.tar.gz
-echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
-source ~/.bashrc
+
+# 让所有用户（包括 root / systemd 会话）都能拿到 go 命令
+echo 'export PATH=/usr/local/go/bin:$PATH' | sudo tee /etc/profile.d/go-path.sh >/dev/null
+sudo chmod +x /etc/profile.d/go-path.sh
+
+# 再补一个稳定兜底：直接放到常见 PATH 目录
+sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+
+# 当前 shell 立即生效
+export PATH=/usr/local/go/bin:$PATH
 go version
 ```
 
@@ -580,3 +588,47 @@ APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh
 - 前端静态文件交给 Nginx
 
 这个方案很适合一台 Ubuntu 服务器快速上线。如果后面要做更完整的 CI/CD、灰度发布或多机部署，再考虑补更完整的容器化方案。
+
+## 17. 故障排查：`go: command not found`
+
+如果你看到下面这个错误：
+
+```text
+./deploy/scripts/deploy_app.sh: line 37: go: command not found
+```
+
+说明 PostgreSQL 步骤通常已经成功，问题只在应用发布阶段找不到 Go。
+
+### 17.1 先确认现状
+
+```bash
+which go
+ls -lah /usr/local/go/bin/go
+echo $PATH
+```
+
+### 17.2 直接修复（Ubuntu）
+
+```bash
+cd /tmp
+wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.25.0.linux-amd64.tar.gz
+echo 'export PATH=/usr/local/go/bin:$PATH' | sudo tee /etc/profile.d/go-path.sh >/dev/null
+sudo chmod +x /etc/profile.d/go-path.sh
+sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+export PATH=/usr/local/go/bin:$PATH
+go version
+```
+
+### 17.3 重新执行部署
+
+```bash
+cd /opt/modelprobe
+APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh --first-time
+```
+
+### 17.4 如果你用 root 执行脚本
+
+`~/.bashrc` 的 PATH 设置经常不会自动生效到当前 root 会话，所以不要只改 `~/.bashrc`。  
+优先使用上面的 `/etc/profile.d/go-path.sh` + `/usr/local/bin/go` 方案。
