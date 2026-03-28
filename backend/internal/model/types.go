@@ -193,3 +193,109 @@ func (r ProbeManualUpdateRequest) Validate() error {
 	}
 	return nil
 }
+
+type AdminUserRecord struct {
+	ID           int64
+	Username     string
+	PasswordHash string
+	CreatedAt    string
+	UpdatedAt    string
+	LastLoginAt  *string
+}
+
+type AdminUserProfile struct {
+	ID          int64   `json:"id"`
+	Username    string  `json:"username"`
+	CreatedAt   string  `json:"createdAt"`
+	UpdatedAt   string  `json:"updatedAt"`
+	LastLoginAt *string `json:"lastLoginAt"`
+}
+
+func (r AdminUserRecord) Profile() AdminUserProfile {
+	return AdminUserProfile{
+		ID:          r.ID,
+		Username:    r.Username,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+		LastLoginAt: r.LastLoginAt,
+	}
+}
+
+type AdminSessionRecord struct {
+	ID          int64
+	AdminUserID int64
+	TokenHash   string
+	ExpiresAt   string
+	CreatedAt   string
+	LastSeenAt  string
+	UserAgent   *string
+	IPAddress   *string
+}
+
+type AdminSessionResponse struct {
+	Configured    bool              `json:"configured"`
+	Authenticated bool              `json:"authenticated"`
+	User          *AdminUserProfile `json:"user"`
+}
+
+type AdminLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (r AdminLoginRequest) Validate() error {
+	if len(strings.TrimSpace(r.Username)) < 3 {
+		return fmt.Errorf("username must be at least 3 characters")
+	}
+	if len(strings.TrimSpace(r.Username)) > 64 {
+		return fmt.Errorf("username is too long")
+	}
+	if len(strings.TrimSpace(r.Password)) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	if len(strings.TrimSpace(r.Password)) > 128 {
+		return fmt.Errorf("password is too long")
+	}
+	return nil
+}
+
+func (r AdminLoginRequest) Normalize() AdminLoginRequest {
+	return AdminLoginRequest{
+		Username: strings.TrimSpace(r.Username),
+		Password: strings.TrimSpace(r.Password),
+	}
+}
+
+type AdminAccountUpdateRequest struct {
+	Username        string `json:"username"`
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
+func (r AdminAccountUpdateRequest) Validate() error {
+	if len(strings.TrimSpace(r.CurrentPassword)) < 8 {
+		return fmt.Errorf("currentPassword must be at least 8 characters")
+	}
+	username := strings.TrimSpace(r.Username)
+	if username != "" {
+		if len(username) < 3 {
+			return fmt.Errorf("username must be at least 3 characters")
+		}
+		if len(username) > 64 {
+			return fmt.Errorf("username is too long")
+		}
+	}
+	newPassword := strings.TrimSpace(r.NewPassword)
+	if newPassword != "" {
+		if len(newPassword) < 8 {
+			return fmt.Errorf("newPassword must be at least 8 characters")
+		}
+		if len(newPassword) > 128 {
+			return fmt.Errorf("newPassword is too long")
+		}
+	}
+	if username == "" && newPassword == "" {
+		return fmt.Errorf("username or newPassword is required")
+	}
+	return nil
+}

@@ -13,6 +13,7 @@ import type {
   ProbeResponse,
   RankingResponse,
 } from "./types";
+import AdminPageShell from "./AdminPage";
 import "./App.css";
 
 const defaultChannels: Record<string, string[]> = {
@@ -32,7 +33,9 @@ const initialProbeForm: ProbeForm = {
 type RouteType = "home" | "admin";
 
 function App() {
-  const [route, setRoute] = useState<RouteType>(parseRoute(window.location.hash));
+  const [route, setRoute] = useState<RouteType>(
+    parseRoute(window.location.hash),
+  );
 
   useEffect(() => {
     function onHashChange() {
@@ -54,23 +57,33 @@ function App() {
         </a>
       </header>
 
-      {route === "admin" ? <AdminPage /> : <ProbePage />}
+      {route === "admin" ? <AdminPageShell /> : <ProbePage />}
     </main>
   );
 }
 
 function ProbePage() {
   const [form, setForm] = useState<ProbeForm>(initialProbeForm);
-  const [channelModels, setChannelModels] = useState<Record<string, string[]>>(defaultChannels);
+  const [channelModels, setChannelModels] =
+    useState<Record<string, string[]>>(defaultChannels);
   const [result, setResult] = useState<ProbeResponse | null>(null);
   const [recent, setRecent] = useState<ProbeListResponse["items"]>([]);
-  const [stationRanking, setStationRanking] = useState<RankingResponse>({ red: [], black: [] });
-  const [groupRanking, setGroupRanking] = useState<RankingResponse>({ red: [], black: [] });
+  const [stationRanking, setStationRanking] = useState<RankingResponse>({
+    red: [],
+    black: [],
+  });
+  const [groupRanking, setGroupRanking] = useState<RankingResponse>({
+    red: [],
+    black: [],
+  });
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const channelOptions = useMemo(() => Object.keys(channelModels), [channelModels]);
+  const channelOptions = useMemo(
+    () => Object.keys(channelModels),
+    [channelModels],
+  );
   const expectedModels = channelModels[form.claimedChannel] ?? [];
 
   useEffect(() => {
@@ -83,26 +96,39 @@ function ProbePage() {
     setError(null);
 
     try {
-      const [recentResponse, stationResponse, groupResponse, channelResponse] = await Promise.all([
-        apiGet<ProbeListResponse>("/api/probes?limit=8"),
-        apiGet<RankingResponse>("/api/rankings/stations?limit=8"),
-        apiGet<RankingResponse>("/api/rankings/groups?limit=8"),
-        apiGet<ChannelModelMapResponse>("/api/channel-models"),
-      ]);
+      const [recentResponse, stationResponse, groupResponse, channelResponse] =
+        await Promise.all([
+          apiGet<ProbeListResponse>("/api/probes?limit=8"),
+          apiGet<RankingResponse>("/api/rankings/stations?limit=8"),
+          apiGet<RankingResponse>("/api/rankings/groups?limit=8"),
+          apiGet<ChannelModelMapResponse>("/api/channel-models"),
+        ]);
 
       const normalizedMap = normalizeChannelModelMap(channelResponse.channels);
-      setChannelModels(Object.keys(normalizedMap).length > 0 ? normalizedMap : defaultChannels);
+      setChannelModels(
+        Object.keys(normalizedMap).length > 0 ? normalizedMap : defaultChannels,
+      );
       setRecent(recentResponse.items);
       setStationRanking(stationResponse);
       setGroupRanking(groupResponse);
 
       setForm((current) => {
         const nextChannel = pickChannel(normalizedMap, current.claimedChannel);
-        const nextExpected = pickModel(normalizedMap, nextChannel, current.expectedModelFamily);
-        return { ...current, claimedChannel: nextChannel, expectedModelFamily: nextExpected };
+        const nextExpected = pickModel(
+          normalizedMap,
+          nextChannel,
+          current.expectedModelFamily,
+        );
+        return {
+          ...current,
+          claimedChannel: nextChannel,
+          expectedModelFamily: nextExpected,
+        };
       });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "加载失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "加载失败",
+      );
     } finally {
       setLoadingDashboard(false);
     }
@@ -118,20 +144,29 @@ function ProbePage() {
       setResult(payload);
       await loadDashboard();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "提交失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "提交失败",
+      );
     } finally {
       setSubmitting(false);
     }
   }
 
-  function updateField<Key extends keyof ProbeForm>(key: Key, value: ProbeForm[Key]) {
+  function updateField<Key extends keyof ProbeForm>(
+    key: Key,
+    value: ProbeForm[Key],
+  ) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
   function updateChannel(channel: string) {
     const nextChannel = pickChannel(channelModels, channel);
     const nextExpected = pickModel(channelModels, nextChannel, "");
-    setForm((current) => ({ ...current, claimedChannel: nextChannel, expectedModelFamily: nextExpected }));
+    setForm((current) => ({
+      ...current,
+      claimedChannel: nextChannel,
+      expectedModelFamily: nextExpected,
+    }));
   }
 
   return (
@@ -140,7 +175,10 @@ function ProbePage() {
         <div className="hero-copy">
           <p className="eyebrow">Model Probe</p>
           <h1>中转站红黑榜</h1>
-          <p className="hero-text">重点检查模型是否被 kiro、反重力、glm 等渠道冒充，榜单按探测样本自动更新。</p>
+          <p className="hero-text">
+            重点检查模型是否被 kiro、反重力、glm
+            等渠道冒充，榜单按探测样本自动更新。
+          </p>
         </div>
         <div className="hero-stats">
           <article>
@@ -167,25 +205,46 @@ function ProbePage() {
 
           <label>
             站点名
-            <input value={form.stationName} onChange={(event) => updateField("stationName", event.target.value)} placeholder="例如：某某中转站" />
+            <input
+              value={form.stationName}
+              onChange={(event) =>
+                updateField("stationName", event.target.value)
+              }
+              placeholder="例如：某某中转站"
+            />
           </label>
           <label>
             分组名
-            <input value={form.groupName} onChange={(event) => updateField("groupName", event.target.value)} placeholder="例如：TG-群组-1" />
+            <input
+              value={form.groupName}
+              onChange={(event) => updateField("groupName", event.target.value)}
+              placeholder="例如：TG-群组-1"
+            />
           </label>
           <label>
             Base URL
-            <input value={form.baseUrl} onChange={(event) => updateField("baseUrl", event.target.value)} placeholder="https://example-proxy.com" />
+            <input
+              value={form.baseUrl}
+              onChange={(event) => updateField("baseUrl", event.target.value)}
+              placeholder="https://example-proxy.com"
+            />
           </label>
           <label>
             API Key
-            <input value={form.apiKey} onChange={(event) => updateField("apiKey", event.target.value)} placeholder="sk-..." />
+            <input
+              value={form.apiKey}
+              onChange={(event) => updateField("apiKey", event.target.value)}
+              placeholder="sk-..."
+            />
           </label>
 
           <div className="split">
             <label>
               宣称渠道
-              <select value={form.claimedChannel} onChange={(event) => updateChannel(event.target.value)}>
+              <select
+                value={form.claimedChannel}
+                onChange={(event) => updateChannel(event.target.value)}
+              >
                 {channelOptions.map((channel) => (
                   <option key={channel} value={channel}>
                     {channel}
@@ -196,7 +255,12 @@ function ProbePage() {
 
             <label>
               期望模型
-              <select value={form.expectedModelFamily} onChange={(event) => updateField("expectedModelFamily", event.target.value)}>
+              <select
+                value={form.expectedModelFamily}
+                onChange={(event) =>
+                  updateField("expectedModelFamily", event.target.value)
+                }
+              >
                 {expectedModels.map((item) => (
                   <option key={item} value={item}>
                     {item}
@@ -206,7 +270,11 @@ function ProbePage() {
             </label>
           </div>
 
-          <button className="primary-button" disabled={submitting || expectedModels.length === 0} type="submit">
+          <button
+            className="primary-button"
+            disabled={submitting || expectedModels.length === 0}
+            type="submit"
+          >
             {submitting ? "检测中..." : "开始检测"}
           </button>
 
@@ -232,7 +300,9 @@ function ProbePage() {
                 </article>
                 <article>
                   <span>期望模型</span>
-                  <strong>{result.probe.expectedModelFamily ?? "未设置"}</strong>
+                  <strong>
+                    {result.probe.expectedModelFamily ?? "未设置"}
+                  </strong>
                 </article>
                 <article>
                   <span>主模型家族</span>
@@ -275,11 +345,23 @@ function ProbePage() {
         <article className="panel">
           <div className="panel-heading">
             <h2>站点红黑榜</h2>
-            <p>{loadingDashboard ? "正在加载..." : "分数高且稳定的站点优先进入红榜。"}</p>
+            <p>
+              {loadingDashboard
+                ? "正在加载..."
+                : "分数高且稳定的站点优先进入红榜。"}
+            </p>
           </div>
           <div className="board-grid">
-            <RankingColumn title="红榜" tone="good" items={stationRanking.red} />
-            <RankingColumn title="黑榜" tone="bad" items={stationRanking.black} />
+            <RankingColumn
+              title="红榜"
+              tone="good"
+              items={stationRanking.red}
+            />
+            <RankingColumn
+              title="黑榜"
+              tone="bad"
+              items={stationRanking.black}
+            />
           </div>
         </article>
 
@@ -307,22 +389,28 @@ function ProbePage() {
                 <strong>{item.stationName}</strong>
                 <p>{item.baseUrl}</p>
               </div>
-              <div className={`mini-verdict ${item.verdict}`}>{item.verdict}</div>
+              <div className={`mini-verdict ${item.verdict}`}>
+                {item.verdict}
+              </div>
               <div>
                 <span>{item.primaryFamily ?? "未识别"}</span>
                 <p>{item.groupName ?? "未分组"}</p>
               </div>
             </article>
           ))}
-          {recent.length === 0 && !loadingDashboard ? <p>还没有探测数据。</p> : null}
+          {recent.length === 0 && !loadingDashboard ? (
+            <p>还没有探测数据。</p>
+          ) : null}
         </div>
       </section>
     </>
   );
 }
 
-function AdminPage() {
-  const [channelRows, setChannelRows] = useState<ChannelModelListResponse["items"]>([]);
+export function AdminPage() {
+  const [channelRows, setChannelRows] = useState<
+    ChannelModelListResponse["items"]
+  >([]);
   const [recent, setRecent] = useState<ProbeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingChannel, setSavingChannel] = useState(false);
@@ -330,7 +418,11 @@ function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedProbe, setSelectedProbe] = useState<ProbeRecord | null>(null);
-  const [channelForm, setChannelForm] = useState<ChannelModelUpsertRequest>({ channelName: "cc", modelId: "claude-sonnet-4.6", isEnabled: true });
+  const [channelForm, setChannelForm] = useState<ChannelModelUpsertRequest>({
+    channelName: "cc",
+    modelId: "claude-sonnet-4.6",
+    isEnabled: true,
+  });
   const [probeForm, setProbeForm] = useState<ProbeManualUpdateRequest>({
     claimedChannel: "cc",
     expectedModelFamily: "claude-sonnet-4.6",
@@ -358,7 +450,10 @@ function AdminPage() {
     return normalizeChannelModelMap(map);
   }, [channelRows]);
 
-  const adminChannels = useMemo(() => Object.keys(enabledChannelMap), [enabledChannelMap]);
+  const adminChannels = useMemo(
+    () => Object.keys(enabledChannelMap),
+    [enabledChannelMap],
+  );
 
   useEffect(() => {
     void loadAdminData();
@@ -377,7 +472,9 @@ function AdminPage() {
       setChannelRows(channelResponse.items);
       setRecent(probeResponse.items);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "加载失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "加载失败",
+      );
     } finally {
       setLoading(false);
     }
@@ -398,13 +495,19 @@ function AdminPage() {
       setNotice("渠道模型配置已保存");
       await loadAdminData();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "保存失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "保存失败",
+      );
     } finally {
       setSavingChannel(false);
     }
   }
 
-  async function toggleChannelModel(channelName: string, modelId: string, isEnabled: boolean) {
+  async function toggleChannelModel(
+    channelName: string,
+    modelId: string,
+    isEnabled: boolean,
+  ) {
     setSavingChannel(true);
     setError(null);
     setNotice(null);
@@ -417,7 +520,9 @@ function AdminPage() {
       await loadAdminData();
       setNotice("状态已更新");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "更新失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "更新失败",
+      );
     } finally {
       setSavingChannel(false);
     }
@@ -432,15 +537,24 @@ function AdminPage() {
       await loadAdminData();
       setNotice("渠道模型配置已删除");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "删除失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "删除失败",
+      );
     } finally {
       setSavingChannel(false);
     }
   }
 
   function startEditProbe(item: ProbeRecord) {
-    const preferredChannel = pickChannel(enabledChannelMap, item.claimedChannel ?? "");
-    const preferredModel = pickModel(enabledChannelMap, preferredChannel, item.expectedModelFamily ?? "");
+    const preferredChannel = pickChannel(
+      enabledChannelMap,
+      item.claimedChannel ?? "",
+    );
+    const preferredModel = pickModel(
+      enabledChannelMap,
+      preferredChannel,
+      item.expectedModelFamily ?? "",
+    );
     const status = normalizeStatus(item.status);
     const verdict = normalizeVerdict(item.verdict);
 
@@ -479,12 +593,17 @@ function AdminPage() {
     setError(null);
     setNotice(null);
     try {
-      const response = await apiPatch<{ probe: ProbeRecord }>(`/api/admin/probes/${selectedProbe.id}`, payload);
+      const response = await apiPatch<{ probe: ProbeRecord }>(
+        `/api/admin/probes/${selectedProbe.id}`,
+        payload,
+      );
       setNotice("探测记录已手工更新");
       setSelectedProbe(response.probe);
       await loadAdminData();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "保存失败");
+      setError(
+        requestError instanceof Error ? requestError.message : "保存失败",
+      );
     } finally {
       setSavingProbe(false);
     }
@@ -493,7 +612,11 @@ function AdminPage() {
   function updateProbeChannel(channel: string) {
     const nextChannel = pickChannel(enabledChannelMap, channel);
     const nextModel = pickModel(enabledChannelMap, nextChannel, "");
-    setProbeForm((current) => ({ ...current, claimedChannel: nextChannel, expectedModelFamily: nextModel }));
+    setProbeForm((current) => ({
+      ...current,
+      claimedChannel: nextChannel,
+      expectedModelFamily: nextModel,
+    }));
   }
 
   const adminModels = enabledChannelMap[probeForm.claimedChannel] ?? [];
@@ -503,7 +626,9 @@ function AdminPage() {
       <section className="panel">
         <div className="panel-heading">
           <h2>后台管理</h2>
-          <p>支持渠道/模型白名单管理，以及探测结果手工纠偏。改完立即影响红黑榜。</p>
+          <p>
+            支持渠道/模型白名单管理，以及探测结果手工纠偏。改完立即影响红黑榜。
+          </p>
         </div>
         {error ? <p className="error-box">{error}</p> : null}
         {notice ? <p className="notice-box">{notice}</p> : null}
@@ -519,21 +644,46 @@ function AdminPage() {
           <form className="stack-form" onSubmit={submitChannelForm}>
             <label>
               渠道
-              <input value={channelForm.channelName} onChange={(event) => setChannelForm((current) => ({ ...current, channelName: event.target.value }))} />
+              <input
+                value={channelForm.channelName}
+                onChange={(event) =>
+                  setChannelForm((current) => ({
+                    ...current,
+                    channelName: event.target.value,
+                  }))
+                }
+              />
             </label>
             <label>
               模型 ID
-              <input value={channelForm.modelId} onChange={(event) => setChannelForm((current) => ({ ...current, modelId: event.target.value }))} />
+              <input
+                value={channelForm.modelId}
+                onChange={(event) =>
+                  setChannelForm((current) => ({
+                    ...current,
+                    modelId: event.target.value,
+                  }))
+                }
+              />
             </label>
             <label className="inline-check">
               <input
                 checked={channelForm.isEnabled}
-                onChange={(event) => setChannelForm((current) => ({ ...current, isEnabled: event.target.checked }))}
+                onChange={(event) =>
+                  setChannelForm((current) => ({
+                    ...current,
+                    isEnabled: event.target.checked,
+                  }))
+                }
                 type="checkbox"
               />
               启用
             </label>
-            <button className="primary-button" disabled={savingChannel} type="submit">
+            <button
+              className="primary-button"
+              disabled={savingChannel}
+              type="submit"
+            >
               {savingChannel ? "保存中..." : "保存渠道模型"}
             </button>
           </form>
@@ -555,10 +705,23 @@ function AdminPage() {
                     <td>{row.modelId}</td>
                     <td>{row.isEnabled ? "启用" : "停用"}</td>
                     <td className="table-actions">
-                      <button onClick={() => toggleChannelModel(row.channelName, row.modelId, row.isEnabled)} type="button">
+                      <button
+                        onClick={() =>
+                          toggleChannelModel(
+                            row.channelName,
+                            row.modelId,
+                            row.isEnabled,
+                          )
+                        }
+                        type="button"
+                      >
                         {row.isEnabled ? "停用" : "启用"}
                       </button>
-                      <button className="danger" onClick={() => removeChannelModel(row.id)} type="button">
+                      <button
+                        className="danger"
+                        onClick={() => removeChannelModel(row.id)}
+                        type="button"
+                      >
                         删除
                       </button>
                     </td>
@@ -583,9 +746,17 @@ function AdminPage() {
           <div className="admin-probe-grid">
             <div className="probe-picker">
               {recent.map((item) => (
-                <button key={item.id} className={selectedProbe?.id === item.id ? "active" : ""} onClick={() => startEditProbe(item)} type="button">
+                <button
+                  key={item.id}
+                  className={selectedProbe?.id === item.id ? "active" : ""}
+                  onClick={() => startEditProbe(item)}
+                  type="button"
+                >
                   <strong>{item.stationName}</strong>
-                  <span>{item.claimedChannel ?? "未设渠道"} / {item.expectedModelFamily ?? "未设模型"}</span>
+                  <span>
+                    {item.claimedChannel ?? "未设渠道"} /{" "}
+                    {item.expectedModelFamily ?? "未设模型"}
+                  </span>
                   <small>{item.id}</small>
                 </button>
               ))}
@@ -595,7 +766,10 @@ function AdminPage() {
             <form className="stack-form" onSubmit={saveProbePatch}>
               <label>
                 宣称渠道
-                <select value={probeForm.claimedChannel} onChange={(event) => updateProbeChannel(event.target.value)}>
+                <select
+                  value={probeForm.claimedChannel}
+                  onChange={(event) => updateProbeChannel(event.target.value)}
+                >
                   {adminChannels.map((channel) => (
                     <option key={channel} value={channel}>
                       {channel}
@@ -606,7 +780,15 @@ function AdminPage() {
 
               <label>
                 期望模型
-                <select value={probeForm.expectedModelFamily} onChange={(event) => setProbeForm((current) => ({ ...current, expectedModelFamily: event.target.value }))}>
+                <select
+                  value={probeForm.expectedModelFamily}
+                  onChange={(event) =>
+                    setProbeForm((current) => ({
+                      ...current,
+                      expectedModelFamily: event.target.value,
+                    }))
+                  }
+                >
                   {adminModels.map((model) => (
                     <option key={model} value={model}>
                       {model}
@@ -618,7 +800,15 @@ function AdminPage() {
               <div className="split">
                 <label>
                   Verdict
-                  <select value={probeForm.verdict} onChange={(event) => setProbeForm((current) => ({ ...current, verdict: normalizeVerdict(event.target.value) }))}>
+                  <select
+                    value={probeForm.verdict}
+                    onChange={(event) =>
+                      setProbeForm((current) => ({
+                        ...current,
+                        verdict: normalizeVerdict(event.target.value),
+                      }))
+                    }
+                  >
                     <option value="trusted">trusted</option>
                     <option value="needs_review">needs_review</option>
                     <option value="high_risk">high_risk</option>
@@ -626,7 +816,15 @@ function AdminPage() {
                 </label>
                 <label>
                   Status
-                  <select value={probeForm.status} onChange={(event) => setProbeForm((current) => ({ ...current, status: normalizeStatus(event.target.value) }))}>
+                  <select
+                    value={probeForm.status}
+                    onChange={(event) =>
+                      setProbeForm((current) => ({
+                        ...current,
+                        status: normalizeStatus(event.target.value),
+                      }))
+                    }
+                  >
                     <option value="success">success</option>
                     <option value="auth_failed">auth_failed</option>
                     <option value="invalid_response">invalid_response</option>
@@ -640,7 +838,12 @@ function AdminPage() {
                 <input
                   max={100}
                   min={0}
-                  onChange={(event) => setProbeForm((current) => ({ ...current, trustScore: Number(event.target.value) }))}
+                  onChange={(event) =>
+                    setProbeForm((current) => ({
+                      ...current,
+                      trustScore: Number(event.target.value),
+                    }))
+                  }
                   type="number"
                   value={probeForm.trustScore}
                 />
@@ -648,25 +851,49 @@ function AdminPage() {
 
               <label>
                 主模型家族
-                <input value={probeForm.primaryFamily} onChange={(event) => setProbeForm((current) => ({ ...current, primaryFamily: event.target.value }))} />
+                <input
+                  value={probeForm.primaryFamily}
+                  onChange={(event) =>
+                    setProbeForm((current) => ({
+                      ...current,
+                      primaryFamily: event.target.value,
+                    }))
+                  }
+                />
               </label>
 
               <label>
                 模型 ID（逗号分隔）
-                <textarea onChange={(event) => setModelIDsText(event.target.value)} rows={3} value={modelIdsText} />
+                <textarea
+                  onChange={(event) => setModelIDsText(event.target.value)}
+                  rows={3}
+                  value={modelIdsText}
+                />
               </label>
 
               <label>
                 可疑原因（每行一条）
-                <textarea onChange={(event) => setSuspicionText(event.target.value)} rows={4} value={suspicionText} />
+                <textarea
+                  onChange={(event) => setSuspicionText(event.target.value)}
+                  rows={4}
+                  value={suspicionText}
+                />
               </label>
 
               <label>
                 正向说明（每行一条）
-                <textarea onChange={(event) => setNotesText(event.target.value)} rows={4} value={notesText} />
+                <textarea
+                  onChange={(event) => setNotesText(event.target.value)}
+                  rows={4}
+                  value={notesText}
+                />
               </label>
 
-              <button className="primary-button" disabled={savingProbe || !selectedProbe} type="submit">
+              <button
+                className="primary-button"
+                disabled={savingProbe || !selectedProbe}
+                type="submit"
+              >
                 {savingProbe ? "保存中..." : "保存手工修正"}
               </button>
             </form>
@@ -694,8 +921,12 @@ function RankingColumn({ title, tone, items }: RankingColumnProps) {
           {items.map((item, index) => (
             <li key={`${title}-${item.name}`}>
               <div>
-                <strong>#{index + 1} {item.name}</strong>
-                <p>{item.totalProbes} 次样本 / {item.successRate}% 成功率</p>
+                <strong>
+                  #{index + 1} {item.name}
+                </strong>
+                <p>
+                  {item.totalProbes} 次样本 / {item.successRate}% 成功率
+                </p>
               </div>
               <div>
                 <strong>{item.avgScore}</strong>
@@ -711,19 +942,28 @@ function RankingColumn({ title, tone, items }: RankingColumnProps) {
   );
 }
 
-function normalizeChannelModelMap(input: Record<string, string[]>): Record<string, string[]> {
+function normalizeChannelModelMap(
+  input: Record<string, string[]>,
+): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const [channel, models] of Object.entries(input)) {
     const normalizedChannel = channel.trim().toLowerCase();
     if (!normalizedChannel) continue;
-    const normalizedModels = [...new Set(models.map((item) => item.trim().toLowerCase()).filter(Boolean))].sort();
+    const normalizedModels = [
+      ...new Set(
+        models.map((item) => item.trim().toLowerCase()).filter(Boolean),
+      ),
+    ].sort();
     if (normalizedModels.length === 0) continue;
     result[normalizedChannel] = normalizedModels;
   }
   return result;
 }
 
-function pickChannel(channelMap: Record<string, string[]>, wanted: string): string {
+function pickChannel(
+  channelMap: Record<string, string[]>,
+  wanted: string,
+): string {
   const options = Object.keys(channelMap);
   if (options.length === 0) return "";
   const normalizedWanted = wanted.trim().toLowerCase();
@@ -731,11 +971,16 @@ function pickChannel(channelMap: Record<string, string[]>, wanted: string): stri
   return options[0];
 }
 
-function pickModel(channelMap: Record<string, string[]>, channel: string, wanted: string): string {
+function pickModel(
+  channelMap: Record<string, string[]>,
+  channel: string,
+  wanted: string,
+): string {
   const models = channelMap[channel] ?? [];
   if (models.length === 0) return "";
   const normalizedWanted = wanted.trim().toLowerCase();
-  if (normalizedWanted && models.includes(normalizedWanted)) return normalizedWanted;
+  if (normalizedWanted && models.includes(normalizedWanted))
+    return normalizedWanted;
   return models[0];
 }
 
@@ -755,7 +1000,11 @@ function splitCSV(text: string): string[] {
 
 function normalizeStatus(value: string): ProbeManualUpdateRequest["status"] {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "success" || normalized === "auth_failed" || normalized === "request_failed") {
+  if (
+    normalized === "success" ||
+    normalized === "auth_failed" ||
+    normalized === "request_failed"
+  ) {
     return normalized;
   }
   return "invalid_response";

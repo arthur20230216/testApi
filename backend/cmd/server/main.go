@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -22,7 +23,12 @@ func main() {
 	defer repo.Close()
 
 	probeService := service.NewProbeService(cfg.ProbeTimeout)
-	probeHandler := handler.NewProbeHandler(repo, probeService)
+	adminAuthService := service.NewAdminAuthService(repo, cfg.AdminSessionTTL)
+	if err := adminAuthService.EnsureBootstrapAdmin(context.Background(), cfg.AdminInitUsername, cfg.AdminInitPassword); err != nil {
+		log.Fatalf("ensure bootstrap admin: %v", err)
+	}
+
+	probeHandler := handler.NewProbeHandler(repo, probeService, adminAuthService, cfg.AdminSessionCookieName)
 	router := server.NewRouter(cfg, probeHandler)
 
 	httpServer := &http.Server{

@@ -96,3 +96,28 @@ export type ProbeManualUpdateRequest = {
   suspicionReasons: string[];
   notes: string[];
 };
+
+export type AdminUserProfile = {
+  id: number;
+  username: string;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string | null;
+};
+
+export type AdminSessionResponse = {
+  configured: boolean;
+  authenticated: boolean;
+  user: AdminUserProfile | null;
+};
+
+export type AdminLoginRequest = {
+  username: string;
+  password: string;
+};
+
+export type AdminAccountUpdateRequest = {
+  username: string;
+  currentPassword: string;
+  newPassword: string;
+};

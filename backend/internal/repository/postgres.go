@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"modelprobe/backend/internal/model"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -91,6 +93,29 @@ func (r *PostgresRepository) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
 	CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
+
+	CREATE TABLE IF NOT EXISTS admin_users (
+		id BIGSERIAL PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_login_at TIMESTAMPTZ
+	);
+
+	CREATE TABLE IF NOT EXISTS admin_sessions (
+		id BIGSERIAL PRIMARY KEY,
+		admin_user_id BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+		token_hash TEXT NOT NULL UNIQUE,
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		user_agent TEXT,
+		ip_address TEXT
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_user_id ON admin_sessions(admin_user_id);
+	CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
 	`
 
 	_, err := r.db.Exec(schema)
@@ -457,6 +482,179 @@ func (r *PostgresRepository) UpdateProbeManual(ctx context.Context, id string, r
 	return r.GetProbeByID(ctx, id)
 }
 
+func (r *PostgresRepository) CountAdminUsers(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count admin users: %w", err)
+	}
+	return count, nil
+}
+
+func (r *PostgresRepository) CreateAdminUser(ctx context.Context, username string, passwordHash string) (*model.AdminUserRecord, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`INSERT INTO admin_users (username, password_hash, updated_at)
+		 VALUES ($1, $2, NOW())
+		 RETURNING id, username, password_hash, created_at, updated_at, last_login_at`,
+		strings.TrimSpace(username),
+		passwordHash,
+	)
+
+	record, err := scanAdminUser(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("admin username already exists")
+		}
+		return nil, fmt.Errorf("create admin user: %w", err)
+	}
+
+	return record, nil
+}
+
+func (r *PostgresRepository) GetAdminUserByUsername(ctx context.Context, username string) (*model.AdminUserRecord, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`SELECT id, username, password_hash, created_at, updated_at, last_login_at
+		 FROM admin_users
+		 WHERE username = $1`,
+		strings.TrimSpace(username),
+	)
+
+	record, err := scanAdminUser(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get admin user by username: %w", err)
+	}
+
+	return record, nil
+}
+
+func (r *PostgresRepository) GetAdminUserByID(ctx context.Context, id int64) (*model.AdminUserRecord, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`SELECT id, username, password_hash, created_at, updated_at, last_login_at
+		 FROM admin_users
+		 WHERE id = $1`,
+		id,
+	)
+
+	record, err := scanAdminUser(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get admin user by id: %w", err)
+	}
+
+	return record, nil
+}
+
+func (r *PostgresRepository) UpdateAdminUserCredentials(ctx context.Context, id int64, username string, passwordHash string, updatePassword bool) (*model.AdminUserRecord, error) {
+	query := `
+		UPDATE admin_users
+		SET username = $2,
+			password_hash = CASE WHEN $4 THEN $3 ELSE password_hash END,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, username, password_hash, created_at, updated_at, last_login_at
+	`
+	row := r.db.QueryRowContext(
+		ctx,
+		query,
+		id,
+		strings.TrimSpace(username),
+		passwordHash,
+		updatePassword,
+	)
+
+	record, err := scanAdminUser(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("admin username already exists")
+		}
+		return nil, fmt.Errorf("update admin user credentials: %w", err)
+	}
+
+	return record, nil
+}
+
+func (r *PostgresRepository) TouchAdminUserLastLogin(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE admin_users SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("touch admin user last login: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) CreateAdminSession(ctx context.Context, adminUserID int64, tokenHash string, expiresAt time.Time, userAgent string, ipAddress string) (*model.AdminSessionRecord, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`INSERT INTO admin_sessions (admin_user_id, token_hash, expires_at, user_agent, ip_address)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, admin_user_id, token_hash, expires_at, created_at, last_seen_at, user_agent, ip_address`,
+		adminUserID,
+		tokenHash,
+		expiresAt.UTC(),
+		nullableUpdateText(userAgent),
+		nullableUpdateText(ipAddress),
+	)
+
+	record, err := scanAdminSession(row)
+	if err != nil {
+		return nil, fmt.Errorf("create admin session: %w", err)
+	}
+	return record, nil
+}
+
+func (r *PostgresRepository) GetAdminSessionByTokenHash(ctx context.Context, tokenHash string) (*model.AdminSessionRecord, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`SELECT id, admin_user_id, token_hash, expires_at, created_at, last_seen_at, user_agent, ip_address
+		 FROM admin_sessions
+		 WHERE token_hash = $1`,
+		tokenHash,
+	)
+
+	record, err := scanAdminSession(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get admin session by token hash: %w", err)
+	}
+
+	return record, nil
+}
+
+func (r *PostgresRepository) TouchAdminSession(ctx context.Context, tokenHash string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE admin_sessions SET last_seen_at = NOW() WHERE token_hash = $1`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("touch admin session: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) DeleteAdminSessionByTokenHash(ctx context.Context, tokenHash string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token_hash = $1`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("delete admin session: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) DeleteExpiredAdminSessions(ctx context.Context) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at <= NOW()`)
+	if err != nil {
+		return fmt.Errorf("delete expired admin sessions: %w", err)
+	}
+	return nil
+}
+
 func scanRankingRows(rows *sql.Rows) ([]model.RankingItem, error) {
 	items := make([]model.RankingItem, 0)
 
@@ -593,4 +791,70 @@ func nullableUpdateText(value string) any {
 		return nil
 	}
 	return normalized
+}
+
+func scanAdminUser(row scanner) (*model.AdminUserRecord, error) {
+	var record model.AdminUserRecord
+	var createdAt time.Time
+	var updatedAt time.Time
+	var lastLoginAt sql.NullTime
+
+	if err := row.Scan(
+		&record.ID,
+		&record.Username,
+		&record.PasswordHash,
+		&createdAt,
+		&updatedAt,
+		&lastLoginAt,
+	); err != nil {
+		return nil, err
+	}
+
+	record.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+	record.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+	record.LastLoginAt = nullTimePtr(lastLoginAt)
+	return &record, nil
+}
+
+func scanAdminSession(row scanner) (*model.AdminSessionRecord, error) {
+	var record model.AdminSessionRecord
+	var expiresAt time.Time
+	var createdAt time.Time
+	var lastSeenAt time.Time
+	var userAgent sql.NullString
+	var ipAddress sql.NullString
+
+	if err := row.Scan(
+		&record.ID,
+		&record.AdminUserID,
+		&record.TokenHash,
+		&expiresAt,
+		&createdAt,
+		&lastSeenAt,
+		&userAgent,
+		&ipAddress,
+	); err != nil {
+		return nil, err
+	}
+
+	record.ExpiresAt = expiresAt.UTC().Format(time.RFC3339Nano)
+	record.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+	record.LastSeenAt = lastSeenAt.UTC().Format(time.RFC3339Nano)
+	record.UserAgent = nullStringPtr(userAgent)
+	record.IPAddress = nullStringPtr(ipAddress)
+	return &record, nil
+}
+
+func nullTimePtr(value sql.NullTime) *string {
+	if !value.Valid {
+		return nil
+	}
+
+	formatted := value.Time.UTC().Format(time.RFC3339Nano)
+	return &formatted
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

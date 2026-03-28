@@ -15,14 +15,18 @@ import (
 )
 
 type ProbeHandler struct {
-	repo         *repository.PostgresRepository
-	probeService *service.ProbeService
+	repo              *repository.PostgresRepository
+	probeService      *service.ProbeService
+	adminAuth         *service.AdminAuthService
+	sessionCookieName string
 }
 
-func NewProbeHandler(repo *repository.PostgresRepository, probeService *service.ProbeService) *ProbeHandler {
+func NewProbeHandler(repo *repository.PostgresRepository, probeService *service.ProbeService, adminAuth *service.AdminAuthService, sessionCookieName string) *ProbeHandler {
 	return &ProbeHandler{
-		repo:         repo,
-		probeService: probeService,
+		repo:              repo,
+		probeService:      probeService,
+		adminAuth:         adminAuth,
+		sessionCookieName: sessionCookieName,
 	}
 }
 
@@ -34,10 +38,17 @@ func (h *ProbeHandler) Register(api *gin.RouterGroup) {
 	api.GET("/probes/:id", h.getProbe)
 	api.GET("/rankings/stations", h.getStationRanking)
 	api.GET("/rankings/groups", h.getGroupRanking)
-	api.GET("/admin/channel-models", h.listChannelModels)
-	api.POST("/admin/channel-models", h.upsertChannelModel)
-	api.DELETE("/admin/channel-models/:id", h.deleteChannelModel)
-	api.PATCH("/admin/probes/:id", h.patchProbe)
+	api.GET("/admin/session", h.getAdminSession)
+	api.POST("/admin/login", h.loginAdmin)
+	api.POST("/admin/logout", h.logoutAdmin)
+
+	admin := api.Group("/admin")
+	admin.Use(h.requireAdminSession())
+	admin.GET("/channel-models", h.listChannelModels)
+	admin.POST("/channel-models", h.upsertChannelModel)
+	admin.DELETE("/channel-models/:id", h.deleteChannelModel)
+	admin.PATCH("/probes/:id", h.patchProbe)
+	admin.PATCH("/account", h.updateAdminAccount)
 }
 
 func (h *ProbeHandler) health(context *gin.Context) {

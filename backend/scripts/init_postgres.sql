@@ -43,6 +43,29 @@ CREATE TABLE IF NOT EXISTS channel_models (
 CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
 CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
 
+CREATE TABLE IF NOT EXISTS admin_users (
+  id BIGSERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_login_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  id BIGSERIAL PRIMARY KEY,
+  admin_user_id BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_agent TEXT,
+  ip_address TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_user_id ON admin_sessions(admin_user_id);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
+
 INSERT INTO channel_models(channel_name, model_id, is_enabled) VALUES
   ('cc', 'claude-sonnet-4.6', TRUE),
   ('cc', 'claude-opus-4.6', TRUE),

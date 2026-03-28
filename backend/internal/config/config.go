@@ -7,18 +7,26 @@ import (
 )
 
 type Config struct {
-	Port         string
-	DatabaseURL  string
-	ProbeTimeout time.Duration
-	AllowOrigin  string
+	Port                   string
+	DatabaseURL            string
+	ProbeTimeout           time.Duration
+	AllowOrigin            string
+	AdminInitUsername      string
+	AdminInitPassword      string
+	AdminSessionTTL        time.Duration
+	AdminSessionCookieName string
 }
 
 func Load() Config {
 	return Config{
-		Port:         getEnv("PORT", "8080"),
-		DatabaseURL:  getEnv("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/modelprobe?sslmode=disable"),
-		ProbeTimeout: time.Duration(getEnvInt("PROBE_TIMEOUT_MS", 10000)) * time.Millisecond,
-		AllowOrigin:  getEnv("ALLOW_ORIGIN", "*"),
+		Port:                   getEnv("PORT", "8080"),
+		DatabaseURL:            getEnv("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/modelprobe?sslmode=disable"),
+		ProbeTimeout:           time.Duration(getEnvInt("PROBE_TIMEOUT_MS", 10000)) * time.Millisecond,
+		AllowOrigin:            getEnv("ALLOW_ORIGIN", "*"),
+		AdminInitUsername:      getEnv("ADMIN_INIT_USERNAME", ""),
+		AdminInitPassword:      getEnv("ADMIN_INIT_PASSWORD", ""),
+		AdminSessionTTL:        time.Duration(getEnvInt("ADMIN_SESSION_TTL_HOURS", 168)) * time.Hour,
+		AdminSessionCookieName: getEnv("ADMIN_SESSION_COOKIE_NAME", "modelprobe_admin_session"),
 	}
 }
 

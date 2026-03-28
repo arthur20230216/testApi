@@ -1,4 +1,16 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8080";
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  "http://localhost:8080";
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 function buildApiUrl(path: string): string {
   const base = API_BASE_URL.replace(/\/+$/, "");
@@ -25,8 +37,11 @@ async function readPayload(response: Response): Promise<unknown> {
   }
 
   const compact = text.replace(/\s+/g, " ").trim();
-  const excerpt = compact.length > 120 ? `${compact.slice(0, 120)}...` : compact;
-  throw new Error(`接口返回非 JSON（HTTP ${response.status}）：${excerpt || "empty body"}`);
+  const excerpt =
+    compact.length > 120 ? `${compact.slice(0, 120)}...` : compact;
+  throw new Error(
+    `接口返回非 JSON（HTTP ${response.status}）：${excerpt || "empty body"}`,
+  );
 }
 
 function extractError(payload: unknown, fallback: string): string {
@@ -34,7 +49,7 @@ function extractError(payload: unknown, fallback: string): string {
     return fallback;
   }
 
-  const maybeError = (payload as { detail?: unknown; error?: unknown });
+  const maybeError = payload as { detail?: unknown; error?: unknown };
   if (typeof maybeError.detail === "string" && maybeError.detail.length > 0) {
     return maybeError.detail;
   }
@@ -46,11 +61,16 @@ function extractError(payload: unknown, fallback: string): string {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(buildApiUrl(path));
+  const response = await fetch(buildApiUrl(path), {
+    credentials: "include",
+  });
   const payload = await readPayload(response);
 
   if (!response.ok) {
-    throw new Error(extractError(payload, `Request failed (HTTP ${response.status})`));
+    throw new ApiError(
+      extractError(payload, `Request failed (HTTP ${response.status})`),
+      response.status,
+    );
   }
 
   return payload as T;
@@ -68,9 +88,14 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return requestJson<T>("DELETE", path);
 }
 
-async function requestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function requestJson<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const response = await fetch(buildApiUrl(path), {
     method,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
@@ -79,7 +104,10 @@ async function requestJson<T>(method: string, path: string, body?: unknown): Pro
   const payload = await readPayload(response);
 
   if (!response.ok) {
-    throw new Error(extractError(payload, `Request failed (HTTP ${response.status})`));
+    throw new ApiError(
+      extractError(payload, `Request failed (HTTP ${response.status})`),
+      response.status,
+    );
   }
 
   return payload as T;
