@@ -54,30 +54,83 @@ func (r ProbeRequest) Validate() error {
 }
 
 type ProbeRecord struct {
-	ID                  string            `json:"id"`
-	CreatedAt           string            `json:"createdAt"`
-	StationName         string            `json:"stationName"`
-	GroupName           *string           `json:"groupName"`
-	BaseURL             string            `json:"baseUrl"`
-	APIKeyHash          string            `json:"apiKeyHash"`
-	APIKeyMasked        string            `json:"apiKeyMasked"`
-	ClaimedChannel      *string           `json:"claimedChannel"`
-	ExpectedModelFamily *string           `json:"expectedModelFamily"`
-	Status              string            `json:"status"`
-	TrustScore          int               `json:"trustScore"`
-	Verdict             string            `json:"verdict"`
-	HTTPStatus          *int              `json:"httpStatus"`
-	DetectedEndpoint    *string           `json:"detectedEndpoint"`
-	ResponseTimeMS      *int              `json:"responseTimeMs"`
-	IsOpenAICompatible  bool              `json:"isOpenAiCompatible"`
-	PrimaryFamily       *string           `json:"primaryFamily"`
-	DetectedFamilies    []string          `json:"detectedFamilies"`
-	ModelIDs            []string          `json:"modelIds"`
-	ResponseHeaders     map[string]string `json:"responseHeaders"`
-	SuspicionReasons    []string          `json:"suspicionReasons"`
-	Notes               []string          `json:"notes"`
-	ErrorMessage        *string           `json:"errorMessage"`
-	RawExcerpt          *string           `json:"rawExcerpt"`
+	ID                       string              `json:"id"`
+	CreatedAt                string              `json:"createdAt"`
+	StationName              string              `json:"stationName"`
+	GroupName                *string             `json:"groupName"`
+	BaseURL                  string              `json:"baseUrl"`
+	APIKeyHash               string              `json:"apiKeyHash"`
+	APIKeyMasked             string              `json:"apiKeyMasked"`
+	ClaimedChannel           *string             `json:"claimedChannel"`
+	ExpectedModelFamily      *string             `json:"expectedModelFamily"`
+	Status                   string              `json:"status"`
+	RuleBasedScore           int                 `json:"ruleBasedScore"`
+	RuleBasedVerdict         string              `json:"ruleBasedVerdict"`
+	TrustScore               int                 `json:"trustScore"`
+	Verdict                  string              `json:"verdict"`
+	HTTPStatus               *int                `json:"httpStatus"`
+	DetectedEndpoint         *string             `json:"detectedEndpoint"`
+	ResponseTimeMS           *int                `json:"responseTimeMs"`
+	IsOpenAICompatible       bool                `json:"isOpenAiCompatible"`
+	PrimaryFamily            *string             `json:"primaryFamily"`
+	DetectedFamilies         []string            `json:"detectedFamilies"`
+	ModelIDs                 []string            `json:"modelIds"`
+	ResponseHeaders          map[string]string   `json:"responseHeaders"`
+	SuspicionReasons         []string            `json:"suspicionReasons"`
+	Notes                    []string            `json:"notes"`
+	ChannelScore             *int                `json:"channelScore"`
+	ChannelVerdict           *string             `json:"channelVerdict"`
+	ChannelConfidence        *int                `json:"channelConfidence"`
+	ChannelSummary           *string             `json:"channelSummary"`
+	ChannelSupportingSignals []string            `json:"channelSupportingSignals"`
+	ChannelRiskSignals       []string            `json:"channelRiskSignals"`
+	ChannelMissingEvidence   []string            `json:"channelMissingEvidence"`
+	ChannelConsistency       *ChannelConsistency `json:"channelConsistency"`
+	ChannelReasoning         *ChannelReasoning   `json:"channelReasoning"`
+	ChannelAuditModel        *string             `json:"channelAuditModel"`
+	ChannelAuditError        *string             `json:"channelAuditError"`
+	ErrorMessage             *string             `json:"errorMessage"`
+	RawExcerpt               *string             `json:"rawExcerpt"`
+}
+
+type ChannelConsistency struct {
+	ClaimedChannelMatchesModelPool        bool `json:"claimedChannelMatchesModelPool"`
+	ClaimedChannelMatchesEndpointBehavior bool `json:"claimedChannelMatchesEndpointBehavior"`
+	ClaimedChannelMatchesErrorStyle       bool `json:"claimedChannelMatchesErrorStyle"`
+	IsLikelyGenericOpenAIWrapper          bool `json:"isLikelyGenericOpenAIWrapper"`
+	IsLikelyMixedProviderPool             bool `json:"isLikelyMixedProviderPool"`
+}
+
+type ChannelReasoning struct {
+	ModelPoolAssessment  string `json:"modelPoolAssessment"`
+	EndpointAssessment   string `json:"endpointAssessment"`
+	ErrorStyleAssessment string `json:"errorStyleAssessment"`
+	FinalAssessment      string `json:"finalAssessment"`
+}
+
+type ChannelAuditResult struct {
+	ChannelVerdict     string             `json:"channelVerdict"`
+	ChannelScore       int                `json:"channelScore"`
+	Confidence         int                `json:"confidence"`
+	Summary            string             `json:"summary"`
+	SupportingSignals  []string           `json:"supportingSignals"`
+	RiskSignals        []string           `json:"riskSignals"`
+	MissingEvidence    []string           `json:"missingEvidence"`
+	ChannelConsistency ChannelConsistency `json:"channelConsistency"`
+	Reasoning          ChannelReasoning   `json:"reasoning"`
+}
+
+func (r ChannelAuditResult) Validate() error {
+	if !slices.Contains([]string{"trusted", "needs_review", "high_risk"}, r.ChannelVerdict) {
+		return fmt.Errorf("channelVerdict is invalid")
+	}
+	if r.ChannelScore < 0 || r.ChannelScore > 100 {
+		return fmt.Errorf("channelScore must be between 0 and 100")
+	}
+	if r.Confidence < 0 || r.Confidence > 100 {
+		return fmt.Errorf("confidence must be between 0 and 100")
+	}
+	return nil
 }
 
 type ProbeSummary struct {
@@ -296,6 +349,54 @@ func (r AdminAccountUpdateRequest) Validate() error {
 	}
 	if username == "" && newPassword == "" {
 		return fmt.Errorf("username or newPassword is required")
+	}
+	return nil
+}
+
+type SystemSettingsRecord struct {
+	ChannelAuditEnabled   bool
+	ChannelAuditTimeoutMS int
+	OpenAIAPIKey          string
+	OpenAIModel           string
+	OpenAIBaseURL         string
+}
+
+type SystemSettingsResponse struct {
+	ChannelAuditEnabled    bool   `json:"channelAuditEnabled"`
+	ChannelAuditTimeoutMS  int    `json:"channelAuditTimeoutMs"`
+	OpenAIAPIKeyMasked     string `json:"openAiApiKeyMasked"`
+	OpenAIAPIKeyConfigured bool   `json:"openAiApiKeyConfigured"`
+	OpenAIModel            string `json:"openAiModel"`
+	OpenAIBaseURL          string `json:"openAiBaseUrl"`
+}
+
+type SystemSettingsUpdateRequest struct {
+	ChannelAuditEnabled   bool   `json:"channelAuditEnabled"`
+	ChannelAuditTimeoutMS int    `json:"channelAuditTimeoutMs"`
+	OpenAIAPIKey          string `json:"openAiApiKey"`
+	ClearOpenAIAPIKey     bool   `json:"clearOpenAiApiKey"`
+	OpenAIModel           string `json:"openAiModel"`
+	OpenAIBaseURL         string `json:"openAiBaseUrl"`
+}
+
+func (r SystemSettingsUpdateRequest) Validate() error {
+	if r.ChannelAuditTimeoutMS < 1000 || r.ChannelAuditTimeoutMS > 120000 {
+		return fmt.Errorf("channelAuditTimeoutMs must be between 1000 and 120000")
+	}
+	if len(strings.TrimSpace(r.OpenAIModel)) > 120 {
+		return fmt.Errorf("openAiModel is too long")
+	}
+	if len(strings.TrimSpace(r.OpenAIBaseURL)) > 300 {
+		return fmt.Errorf("openAiBaseUrl is too long")
+	}
+	if len(strings.TrimSpace(r.OpenAIAPIKey)) > 500 {
+		return fmt.Errorf("openAiApiKey is too long")
+	}
+	if strings.TrimSpace(r.OpenAIBaseURL) != "" {
+		parsedURL, err := url.ParseRequestURI(strings.TrimSpace(r.OpenAIBaseURL))
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+			return fmt.Errorf("openAiBaseUrl must be a valid absolute URL")
+		}
 	}
 	return nil
 }

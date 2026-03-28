@@ -9,6 +9,8 @@ export type ProbeRecord = {
   claimedChannel: string | null;
   expectedModelFamily: string | null;
   status: string;
+  ruleBasedScore: number;
+  ruleBasedVerdict: "trusted" | "needs_review" | "high_risk";
   trustScore: number;
   verdict: "trusted" | "needs_review" | "high_risk";
   httpStatus: number | null;
@@ -21,6 +23,28 @@ export type ProbeRecord = {
   responseHeaders: Record<string, string>;
   suspicionReasons: string[];
   notes: string[];
+  channelScore: number | null;
+  channelVerdict: "trusted" | "needs_review" | "high_risk" | null;
+  channelConfidence: number | null;
+  channelSummary: string | null;
+  channelSupportingSignals: string[];
+  channelRiskSignals: string[];
+  channelMissingEvidence: string[];
+  channelConsistency: {
+    claimedChannelMatchesModelPool: boolean;
+    claimedChannelMatchesEndpointBehavior: boolean;
+    claimedChannelMatchesErrorStyle: boolean;
+    isLikelyGenericOpenAIWrapper: boolean;
+    isLikelyMixedProviderPool: boolean;
+  } | null;
+  channelReasoning: {
+    modelPoolAssessment: string;
+    endpointAssessment: string;
+    errorStyleAssessment: string;
+    finalAssessment: string;
+  } | null;
+  channelAuditModel: string | null;
+  channelAuditError: string | null;
   errorMessage: string | null;
   rawExcerpt: string | null;
 };
@@ -120,4 +144,22 @@ export type AdminAccountUpdateRequest = {
   username: string;
   currentPassword: string;
   newPassword: string;
+};
+
+export type SystemSettingsResponse = {
+  channelAuditEnabled: boolean;
+  channelAuditTimeoutMs: number;
+  openAiApiKeyMasked: string;
+  openAiApiKeyConfigured: boolean;
+  openAiModel: string;
+  openAiBaseUrl: string;
+};
+
+export type SystemSettingsUpdateRequest = {
+  channelAuditEnabled: boolean;
+  channelAuditTimeoutMs: number;
+  openAiApiKey: string;
+  clearOpenAiApiKey: boolean;
+  openAiModel: string;
+  openAiBaseUrl: string;
 };

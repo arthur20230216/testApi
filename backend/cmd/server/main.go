@@ -22,13 +22,21 @@ func main() {
 	}
 	defer repo.Close()
 
-	probeService := service.NewProbeService(cfg.ProbeTimeout)
+	systemSettingsService := service.NewSystemSettingsService(repo, service.SystemSettingsDefaults{
+		ChannelAuditEnabled:   cfg.ChannelAuditEnabled,
+		ChannelAuditTimeoutMS: int(cfg.ChannelAuditTimeout / time.Millisecond),
+		OpenAIAPIKey:          cfg.OpenAIAPIKey,
+		OpenAIModel:           cfg.OpenAIModel,
+		OpenAIBaseURL:         cfg.OpenAIBaseURL,
+	})
+	channelAuditService := service.NewChannelAuditService(systemSettingsService)
+	probeService := service.NewProbeService(cfg.ProbeTimeout, channelAuditService)
 	adminAuthService := service.NewAdminAuthService(repo, cfg.AdminSessionTTL)
 	if err := adminAuthService.EnsureBootstrapAdmin(context.Background(), cfg.AdminInitUsername, cfg.AdminInitPassword); err != nil {
 		log.Fatalf("ensure bootstrap admin: %v", err)
 	}
 
-	probeHandler := handler.NewProbeHandler(repo, probeService, adminAuthService, cfg.AdminSessionCookieName)
+	probeHandler := handler.NewProbeHandler(repo, probeService, adminAuthService, systemSettingsService, cfg.AdminSessionCookieName)
 	router := server.NewRouter(cfg, probeHandler)
 
 	httpServer := &http.Server{

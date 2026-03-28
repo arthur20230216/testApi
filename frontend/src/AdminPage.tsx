@@ -11,12 +11,23 @@ import type {
   ProbeListResponse,
   ProbeManualUpdateRequest,
   ProbeRecord,
+  SystemSettingsResponse,
+  SystemSettingsUpdateRequest,
 } from "./types";
 
 const initialAdminAccountForm: AdminAccountUpdateRequest = {
   username: "",
   currentPassword: "",
   newPassword: "",
+};
+
+const initialSystemSettingsForm: SystemSettingsUpdateRequest = {
+  channelAuditEnabled: false,
+  channelAuditTimeoutMs: 15000,
+  openAiApiKey: "",
+  clearOpenAiApiKey: false,
+  openAiModel: "",
+  openAiBaseUrl: "https://api.openai.com/v1",
 };
 
 export default function AdminPageShell() {
@@ -229,6 +240,7 @@ function AdminConsole({
   const [savingChannel, setSavingChannel] = useState(false);
   const [savingProbe, setSavingProbe] = useState(false);
   const [savingAccount, setSavingAccount] = useState(false);
+  const [savingSystemSettings, setSavingSystemSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedProbe, setSelectedProbe] = useState<ProbeRecord | null>(null);
@@ -252,6 +264,10 @@ function AdminConsole({
     ...initialAdminAccountForm,
     username: sessionUser.username,
   });
+  const [systemSettings, setSystemSettings] =
+    useState<SystemSettingsResponse | null>(null);
+  const [systemSettingsForm, setSystemSettingsForm] =
+    useState<SystemSettingsUpdateRequest>(initialSystemSettingsForm);
   const [confirmPassword, setConfirmPassword] = useState("");
   const [modelIdsText, setModelIDsText] = useState("");
   const [suspicionText, setSuspicionText] = useState("");
@@ -290,13 +306,25 @@ function AdminConsole({
     setError(null);
 
     try {
-      const [channelResponse, probeResponse] = await Promise.all([
-        apiGet<ChannelModelListResponse>("/api/admin/channel-models"),
-        apiGet<ProbeListResponse>("/api/probes?limit=30"),
-      ]);
+      const [channelResponse, probeResponse, settingsResponse] =
+        await Promise.all([
+          apiGet<ChannelModelListResponse>("/api/admin/channel-models"),
+          apiGet<ProbeListResponse>("/api/probes?limit=30"),
+          apiGet<SystemSettingsResponse>("/api/admin/system-settings"),
+        ]);
 
       setChannelRows(channelResponse.items);
       setRecent(probeResponse.items);
+      setSystemSettings(settingsResponse);
+      setSystemSettingsForm({
+        channelAuditEnabled: settingsResponse.channelAuditEnabled,
+        channelAuditTimeoutMs: settingsResponse.channelAuditTimeoutMs,
+        openAiApiKey: "",
+        clearOpenAiApiKey: false,
+        openAiModel: settingsResponse.openAiModel,
+        openAiBaseUrl:
+          settingsResponse.openAiBaseUrl || "https://api.openai.com/v1",
+      });
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.status === 401) {
         onUnauthorized();
@@ -515,6 +543,43 @@ function AdminConsole({
     }
   }
 
+  async function saveSystemSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingSystemSettings(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const response = await apiPatch<SystemSettingsResponse>(
+        "/api/admin/system-settings",
+        systemSettingsForm,
+      );
+      setSystemSettings(response);
+      setSystemSettingsForm((current) => ({
+        ...current,
+        channelAuditEnabled: response.channelAuditEnabled,
+        channelAuditTimeoutMs: response.channelAuditTimeoutMs,
+        openAiApiKey: "",
+        clearOpenAiApiKey: false,
+        openAiModel: response.openAiModel,
+        openAiBaseUrl: response.openAiBaseUrl || "https://api.openai.com/v1",
+      }));
+      setNotice("System settings updated");
+    } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Failed to save system settings",
+      );
+    } finally {
+      setSavingSystemSettings(false);
+    }
+  }
+
   function updateProbeChannel(channel: string) {
     const nextChannel = pickChannel(enabledChannelMap, channel);
     const nextModel = pickModel(enabledChannelMap, nextChannel, "");
@@ -613,6 +678,119 @@ function AdminConsole({
               type="submit"
             >
               {savingAccount ? "Saving..." : "Save Admin Account"}
+            </button>
+          </form>
+        </article>
+
+        <article className="panel">
+          <div className="panel-heading">
+            <h2>System Settings</h2>
+            <p>
+              Configure channel audit directly in the admin page. These values
+              are stored in PostgreSQL.
+            </p>
+          </div>
+
+          <form className="stack-form" onSubmit={saveSystemSettings}>
+            <label className="inline-check">
+              <input
+                checked={systemSettingsForm.channelAuditEnabled}
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    channelAuditEnabled: event.target.checked,
+                  }))
+                }
+                type="checkbox"
+              />
+              Enable Channel Audit
+            </label>
+
+            <label>
+              Audit Timeout (ms)
+              <input
+                min={1000}
+                max={120000}
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    channelAuditTimeoutMs: Number(event.target.value),
+                  }))
+                }
+                type="number"
+                value={systemSettingsForm.channelAuditTimeoutMs}
+              />
+            </label>
+
+            <label>
+              OpenAI Base URL
+              <input
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    openAiBaseUrl: event.target.value,
+                  }))
+                }
+                value={systemSettingsForm.openAiBaseUrl}
+              />
+            </label>
+
+            <label>
+              OpenAI Model
+              <input
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    openAiModel: event.target.value,
+                  }))
+                }
+                value={systemSettingsForm.openAiModel}
+              />
+            </label>
+
+            <label>
+              OpenAI API Key
+              <input
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    openAiApiKey: event.target.value,
+                    clearOpenAiApiKey: false,
+                  }))
+                }
+                placeholder={
+                  systemSettings?.openAiApiKeyConfigured
+                    ? `Current: ${systemSettings.openAiApiKeyMasked}`
+                    : "sk-..."
+                }
+                type="password"
+                value={systemSettingsForm.openAiApiKey}
+              />
+            </label>
+
+            <label className="inline-check">
+              <input
+                checked={systemSettingsForm.clearOpenAiApiKey}
+                onChange={(event) =>
+                  setSystemSettingsForm((current) => ({
+                    ...current,
+                    clearOpenAiApiKey: event.target.checked,
+                    openAiApiKey: event.target.checked
+                      ? ""
+                      : current.openAiApiKey,
+                  }))
+                }
+                type="checkbox"
+              />
+              Clear stored API key
+            </label>
+
+            <button
+              className="primary-button"
+              disabled={savingSystemSettings}
+              type="submit"
+            >
+              {savingSystemSettings ? "Saving..." : "Save System Settings"}
             </button>
           </form>
         </article>

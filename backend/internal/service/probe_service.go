@@ -16,8 +16,9 @@ import (
 )
 
 type ProbeService struct {
-	client  *http.Client
-	timeout time.Duration
+	client              *http.Client
+	timeout             time.Duration
+	channelAuditService *ChannelAuditService
 }
 
 type probeAttempt struct {
@@ -79,12 +80,13 @@ var counterfeitFamilies = []string{
 	"kimi",
 }
 
-func NewProbeService(timeout time.Duration) *ProbeService {
+func NewProbeService(timeout time.Duration, channelAuditService *ChannelAuditService) *ProbeService {
 	return &ProbeService{
 		client: &http.Client{
 			Timeout: timeout + 2*time.Second,
 		},
-		timeout: timeout,
+		timeout:             timeout,
+		channelAuditService: channelAuditService,
 	}
 }
 
@@ -101,7 +103,7 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 	modelIDs := collectModelIDs(attempt.BodyJSON)
 	families := detectFamilies(append(modelIDs, valueOrEmpty(rawExcerpt)))
 	compatibility := isOpenAICompatible(attempt.BodyJSON, len(modelIDs) > 0)
-	score, status, verdict, suspicionReasons, notes := scoreProbe(
+	ruleScore, status, ruleVerdict, suspicionReasons, notes := scoreProbe(
 		attempt,
 		modelIDs,
 		families,
@@ -111,7 +113,23 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		channelModels,
 	)
 
-	return model.ProbeRecord{
+	channelAudit, channelAuditError := s.runChannelAudit(
+		ctx,
+		input,
+		attempt,
+		modelIDs,
+		families,
+		compatibility,
+		channelModels,
+		ruleScore,
+		ruleVerdict,
+		suspicionReasons,
+		notes,
+	)
+
+	trustScore, verdict := mergeProbeVerdict(ruleScore, ruleVerdict, channelAudit)
+
+	record := model.ProbeRecord{
 		ID:                  newID(),
 		CreatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
 		StationName:         strings.TrimSpace(input.StationName),
@@ -122,7 +140,9 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		ClaimedChannel:      nullableString(strings.TrimSpace(input.ClaimedChannel)),
 		ExpectedModelFamily: nullableString(strings.TrimSpace(input.ExpectedModelFamily)),
 		Status:              status,
-		TrustScore:          score,
+		RuleBasedScore:      ruleScore,
+		RuleBasedVerdict:    ruleVerdict,
+		TrustScore:          trustScore,
 		Verdict:             verdict,
 		HTTPStatus:          attempt.Status,
 		DetectedEndpoint:    nullableString(attempt.Endpoint),
@@ -136,7 +156,28 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		Notes:               notes,
 		ErrorMessage:        attempt.ErrorMessage,
 		RawExcerpt:          rawExcerpt,
-	}, nil
+	}
+
+	if channelAudit != nil {
+		settings, settingsErr := s.channelAuditService.settingsService.Load(ctx)
+		record.ChannelScore = &channelAudit.ChannelScore
+		record.ChannelConfidence = &channelAudit.Confidence
+		record.ChannelVerdict = nullableString(channelAudit.ChannelVerdict)
+		record.ChannelSummary = nullableString(channelAudit.Summary)
+		record.ChannelSupportingSignals = channelAudit.SupportingSignals
+		record.ChannelRiskSignals = channelAudit.RiskSignals
+		record.ChannelMissingEvidence = channelAudit.MissingEvidence
+		record.ChannelConsistency = &channelAudit.ChannelConsistency
+		record.ChannelReasoning = &channelAudit.Reasoning
+		if settingsErr == nil {
+			record.ChannelAuditModel = nullableString(settings.OpenAIModel)
+		}
+	}
+	if channelAuditError != nil {
+		record.ChannelAuditError = channelAuditError
+	}
+
+	return record, nil
 }
 
 func (s *ProbeService) attemptProbe(parent context.Context, endpoint string, apiKey string) probeAttempt {
@@ -344,6 +385,79 @@ func scoreProbe(
 	}
 
 	return score, status, verdict, suspicionReasons, notes
+}
+
+func (s *ProbeService) runChannelAudit(
+	ctx context.Context,
+	input model.ProbeRequest,
+	attempt probeAttempt,
+	modelIDs []string,
+	families []string,
+	compatibility bool,
+	channelModels map[string][]string,
+	ruleScore int,
+	ruleVerdict string,
+	suspicionReasons []string,
+	notes []string,
+) (*model.ChannelAuditResult, *string) {
+	if s.channelAuditService == nil || !s.channelAuditService.Enabled() {
+		return nil, nil
+	}
+
+	result, err := s.channelAuditService.Audit(
+		ctx,
+		input,
+		attempt,
+		modelIDs,
+		families,
+		compatibility,
+		channelModels,
+		ruleScore,
+		ruleVerdict,
+		suspicionReasons,
+		notes,
+	)
+	if err != nil {
+		message := err.Error()
+		return nil, &message
+	}
+
+	return result, nil
+}
+
+func mergeProbeVerdict(ruleScore int, ruleVerdict string, channelAudit *model.ChannelAuditResult) (int, string) {
+	if channelAudit == nil {
+		return ruleScore, ruleVerdict
+	}
+
+	score := int(float64(ruleScore)*0.6 + float64(channelAudit.ChannelScore)*0.4)
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+
+	verdict := "needs_review"
+	switch {
+	case ruleVerdict == "high_risk" || channelAudit.ChannelVerdict == "high_risk":
+		verdict = "high_risk"
+		if score >= 50 {
+			score = 49
+		}
+	case ruleVerdict == "trusted" && channelAudit.ChannelVerdict == "trusted" && score >= 80:
+		verdict = "trusted"
+	default:
+		verdict = "needs_review"
+		if score < 50 {
+			score = 50
+		}
+		if score > 79 {
+			score = 79
+		}
+	}
+
+	return score, verdict
 }
 
 func pickBestAttempt(attempts []probeAttempt) probeAttempt {

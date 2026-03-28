@@ -19,6 +19,17 @@ type PostgresRepository struct {
 	db *sql.DB
 }
 
+const probeSelectColumns = `
+	id, created_at, station_name, group_name, base_url, api_key_hash, api_key_masked,
+	claimed_channel, expected_model_family, status, rule_based_score, rule_based_verdict,
+	trust_score, verdict, http_status, detected_endpoint, response_time_ms, is_openai_compatible,
+	primary_family, detected_families_json, model_ids_json, response_headers_json,
+	suspicion_reasons_json, notes_json, channel_score, channel_verdict, channel_confidence,
+	channel_summary, channel_supporting_signals_json, channel_risk_signals_json,
+	channel_missing_evidence_json, channel_consistency_json, channel_reasoning_json,
+	channel_audit_model, channel_audit_error, error_message, raw_excerpt
+`
+
 func NewPostgresRepository(databaseURL string) (*PostgresRepository, error) {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
@@ -60,6 +71,8 @@ func (r *PostgresRepository) initSchema() error {
 		claimed_channel TEXT,
 		expected_model_family TEXT,
 		status TEXT NOT NULL,
+		rule_based_score INTEGER NOT NULL DEFAULT 0,
+		rule_based_verdict TEXT NOT NULL DEFAULT 'needs_review',
 		trust_score INTEGER NOT NULL,
 		verdict TEXT NOT NULL,
 		http_status INTEGER,
@@ -72,9 +85,34 @@ func (r *PostgresRepository) initSchema() error {
 		response_headers_json JSONB NOT NULL,
 		suspicion_reasons_json JSONB NOT NULL,
 		notes_json JSONB NOT NULL,
+		channel_score INTEGER,
+		channel_verdict TEXT,
+		channel_confidence INTEGER,
+		channel_summary TEXT,
+		channel_supporting_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		channel_risk_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		channel_missing_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		channel_consistency_json JSONB,
+		channel_reasoning_json JSONB,
+		channel_audit_model TEXT,
+		channel_audit_error TEXT,
 		error_message TEXT,
 		raw_excerpt TEXT
 	);
+
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS rule_based_score INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS rule_based_verdict TEXT NOT NULL DEFAULT 'needs_review';
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_score INTEGER;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_verdict TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_confidence INTEGER;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_summary TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_supporting_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_risk_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_missing_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_consistency_json JSONB;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_reasoning_json JSONB;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_audit_model TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_audit_error TEXT;
 
 	CREATE INDEX IF NOT EXISTS idx_probes_created_at ON probes(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_probes_station_name ON probes(station_name);
@@ -93,6 +131,12 @@ func (r *PostgresRepository) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
 	CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
+
+	CREATE TABLE IF NOT EXISTS system_settings (
+		setting_key TEXT PRIMARY KEY,
+		setting_value TEXT NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
 
 	CREATE TABLE IF NOT EXISTS admin_users (
 		id BIGSERIAL PRIMARY KEY,
@@ -162,6 +206,11 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 	responseHeadersJSON, _ := json.Marshal(probe.ResponseHeaders)
 	suspicionReasonsJSON, _ := json.Marshal(probe.SuspicionReasons)
 	notesJSON, _ := json.Marshal(probe.Notes)
+	channelSupportingSignalsJSON, _ := json.Marshal(probe.ChannelSupportingSignals)
+	channelRiskSignalsJSON, _ := json.Marshal(probe.ChannelRiskSignals)
+	channelMissingEvidenceJSON, _ := json.Marshal(probe.ChannelMissingEvidence)
+	channelConsistencyJSON, _ := json.Marshal(probe.ChannelConsistency)
+	channelReasoningJSON, _ := json.Marshal(probe.ChannelReasoning)
 
 	createdAt, err := time.Parse(time.RFC3339Nano, probe.CreatedAt)
 	if err != nil {
@@ -171,14 +220,20 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 	query := `
 	INSERT INTO probes (
 		id, created_at, station_name, group_name, base_url, api_key_hash, api_key_masked,
-		claimed_channel, expected_model_family, status, trust_score, verdict, http_status,
+		claimed_channel, expected_model_family, status, rule_based_score, rule_based_verdict,
+		trust_score, verdict, http_status,
 		detected_endpoint, response_time_ms, is_openai_compatible, primary_family,
 		detected_families_json, model_ids_json, response_headers_json, suspicion_reasons_json,
-		notes_json, error_message, raw_excerpt
+		notes_json, channel_score, channel_verdict, channel_confidence, channel_summary,
+		channel_supporting_signals_json, channel_risk_signals_json, channel_missing_evidence_json,
+		channel_consistency_json, channel_reasoning_json, channel_audit_model, channel_audit_error,
+		error_message, raw_excerpt
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-		$13, $14, $15, $16, $17, $18::jsonb, $19::jsonb, $20::jsonb,
-		$21::jsonb, $22::jsonb, $23, $24
+		$13, $14, $15, $16, $17, $18, $19,
+		$20::jsonb, $21::jsonb, $22::jsonb, $23::jsonb, $24::jsonb,
+		$25, $26, $27, $28, $29::jsonb, $30::jsonb, $31::jsonb,
+		$32::jsonb, $33::jsonb, $34, $35, $36, $37
 	)
 	`
 
@@ -195,6 +250,8 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 		probe.ClaimedChannel,
 		probe.ExpectedModelFamily,
 		probe.Status,
+		probe.RuleBasedScore,
+		probe.RuleBasedVerdict,
 		probe.TrustScore,
 		probe.Verdict,
 		probe.HTTPStatus,
@@ -207,6 +264,17 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 		string(responseHeadersJSON),
 		string(suspicionReasonsJSON),
 		string(notesJSON),
+		probe.ChannelScore,
+		probe.ChannelVerdict,
+		probe.ChannelConfidence,
+		probe.ChannelSummary,
+		string(channelSupportingSignalsJSON),
+		string(channelRiskSignalsJSON),
+		string(channelMissingEvidenceJSON),
+		nullableJSON(channelConsistencyJSON),
+		nullableJSON(channelReasoningJSON),
+		probe.ChannelAuditModel,
+		probe.ChannelAuditError,
 		probe.ErrorMessage,
 		probe.RawExcerpt,
 	)
@@ -218,7 +286,7 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 }
 
 func (r *PostgresRepository) GetProbeByID(ctx context.Context, id string) (*model.ProbeRecord, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT * FROM probes WHERE id = $1`, id)
+	row := r.db.QueryRowContext(ctx, `SELECT `+probeSelectColumns+` FROM probes WHERE id = $1`, id)
 
 	record, err := scanProbe(row)
 	if err != nil {
@@ -233,7 +301,7 @@ func (r *PostgresRepository) GetProbeByID(ctx context.Context, id string) (*mode
 }
 
 func (r *PostgresRepository) ListRecentProbes(ctx context.Context, limit int) ([]model.ProbeRecord, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT * FROM probes ORDER BY created_at DESC LIMIT $1`, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+probeSelectColumns+` FROM probes ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list probes: %w", err)
 	}
@@ -432,6 +500,50 @@ func (r *PostgresRepository) DeleteChannelModel(ctx context.Context, id int64) e
 	}
 	if affected == 0 {
 		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func (r *PostgresRepository) GetSystemSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT setting_key, setting_value FROM system_settings`)
+	if err != nil {
+		return nil, fmt.Errorf("get system settings: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var key string
+		var value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scan system setting: %w", err)
+		}
+		result[key] = value
+	}
+
+	return result, rows.Err()
+}
+
+func (r *PostgresRepository) UpsertSystemSettings(ctx context.Context, values map[string]*string) error {
+	for key, value := range values {
+		if value == nil {
+			if _, err := r.db.ExecContext(ctx, `DELETE FROM system_settings WHERE setting_key = $1`, key); err != nil {
+				return fmt.Errorf("delete system setting %s: %w", key, err)
+			}
+			continue
+		}
+
+		if _, err := r.db.ExecContext(
+			ctx,
+			`INSERT INTO system_settings (setting_key, setting_value, updated_at)
+			 VALUES ($1, $2, NOW())
+			 ON CONFLICT(setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+			key,
+			*value,
+		); err != nil {
+			return fmt.Errorf("upsert system setting %s: %w", key, err)
+		}
 	}
 
 	return nil
@@ -689,10 +801,19 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	var groupName sql.NullString
 	var claimedChannel sql.NullString
 	var expectedModelFamily sql.NullString
+	var ruleBasedVerdict string
 	var httpStatus sql.NullInt64
 	var detectedEndpoint sql.NullString
 	var responseTimeMS sql.NullInt64
 	var primaryFamily sql.NullString
+	var channelScore sql.NullInt64
+	var channelVerdict sql.NullString
+	var channelConfidence sql.NullInt64
+	var channelSummary sql.NullString
+	var channelConsistencyJSON []byte
+	var channelReasoningJSON []byte
+	var channelAuditModel sql.NullString
+	var channelAuditError sql.NullString
 	var errorMessage sql.NullString
 	var rawExcerpt sql.NullString
 	var isOpenAICompatible bool
@@ -701,6 +822,9 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	var responseHeadersJSON []byte
 	var suspicionReasonsJSON []byte
 	var notesJSON []byte
+	var channelSupportingSignalsJSON []byte
+	var channelRiskSignalsJSON []byte
+	var channelMissingEvidenceJSON []byte
 
 	err := row.Scan(
 		&record.ID,
@@ -713,6 +837,8 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 		&claimedChannel,
 		&expectedModelFamily,
 		&record.Status,
+		&record.RuleBasedScore,
+		&ruleBasedVerdict,
 		&record.TrustScore,
 		&record.Verdict,
 		&httpStatus,
@@ -725,6 +851,17 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 		&responseHeadersJSON,
 		&suspicionReasonsJSON,
 		&notesJSON,
+		&channelScore,
+		&channelVerdict,
+		&channelConfidence,
+		&channelSummary,
+		&channelSupportingSignalsJSON,
+		&channelRiskSignalsJSON,
+		&channelMissingEvidenceJSON,
+		&channelConsistencyJSON,
+		&channelReasoningJSON,
+		&channelAuditModel,
+		&channelAuditError,
 		&errorMessage,
 		&rawExcerpt,
 	)
@@ -736,10 +873,17 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	record.GroupName = nullStringPtr(groupName)
 	record.ClaimedChannel = nullStringPtr(claimedChannel)
 	record.ExpectedModelFamily = nullStringPtr(expectedModelFamily)
+	record.RuleBasedVerdict = ruleBasedVerdict
 	record.HTTPStatus = nullIntPtr(httpStatus)
 	record.DetectedEndpoint = nullStringPtr(detectedEndpoint)
 	record.ResponseTimeMS = nullIntPtr(responseTimeMS)
 	record.PrimaryFamily = nullStringPtr(primaryFamily)
+	record.ChannelScore = nullIntPtr(channelScore)
+	record.ChannelVerdict = nullStringPtr(channelVerdict)
+	record.ChannelConfidence = nullIntPtr(channelConfidence)
+	record.ChannelSummary = nullStringPtr(channelSummary)
+	record.ChannelAuditModel = nullStringPtr(channelAuditModel)
+	record.ChannelAuditError = nullStringPtr(channelAuditError)
 	record.ErrorMessage = nullStringPtr(errorMessage)
 	record.RawExcerpt = nullStringPtr(rawExcerpt)
 	record.IsOpenAICompatible = isOpenAICompatible
@@ -762,6 +906,34 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 
 	if err := json.Unmarshal(notesJSON, &record.Notes); err != nil {
 		return nil, fmt.Errorf("decode notes: %w", err)
+	}
+
+	if err := json.Unmarshal(channelSupportingSignalsJSON, &record.ChannelSupportingSignals); err != nil {
+		return nil, fmt.Errorf("decode channel supporting signals: %w", err)
+	}
+
+	if err := json.Unmarshal(channelRiskSignalsJSON, &record.ChannelRiskSignals); err != nil {
+		return nil, fmt.Errorf("decode channel risk signals: %w", err)
+	}
+
+	if err := json.Unmarshal(channelMissingEvidenceJSON, &record.ChannelMissingEvidence); err != nil {
+		return nil, fmt.Errorf("decode channel missing evidence: %w", err)
+	}
+
+	if len(channelConsistencyJSON) > 0 && string(channelConsistencyJSON) != "null" {
+		var consistency model.ChannelConsistency
+		if err := json.Unmarshal(channelConsistencyJSON, &consistency); err != nil {
+			return nil, fmt.Errorf("decode channel consistency: %w", err)
+		}
+		record.ChannelConsistency = &consistency
+	}
+
+	if len(channelReasoningJSON) > 0 && string(channelReasoningJSON) != "null" {
+		var reasoning model.ChannelReasoning
+		if err := json.Unmarshal(channelReasoningJSON, &reasoning); err != nil {
+			return nil, fmt.Errorf("decode channel reasoning: %w", err)
+		}
+		record.ChannelReasoning = &reasoning
 	}
 
 	return &record, nil
@@ -791,6 +963,14 @@ func nullableUpdateText(value string) any {
 		return nil
 	}
 	return normalized
+}
+
+func nullableJSON(value []byte) any {
+	trimmed := strings.TrimSpace(string(value))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	return trimmed
 }
 
 func scanAdminUser(row scanner) (*model.AdminUserRecord, error) {

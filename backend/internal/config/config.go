@@ -11,6 +11,11 @@ type Config struct {
 	DatabaseURL            string
 	ProbeTimeout           time.Duration
 	AllowOrigin            string
+	ChannelAuditEnabled    bool
+	ChannelAuditTimeout    time.Duration
+	OpenAIAPIKey           string
+	OpenAIBaseURL          string
+	OpenAIModel            string
 	AdminInitUsername      string
 	AdminInitPassword      string
 	AdminSessionTTL        time.Duration
@@ -23,6 +28,11 @@ func Load() Config {
 		DatabaseURL:            getEnv("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/modelprobe?sslmode=disable"),
 		ProbeTimeout:           time.Duration(getEnvInt("PROBE_TIMEOUT_MS", 10000)) * time.Millisecond,
 		AllowOrigin:            getEnv("ALLOW_ORIGIN", "*"),
+		ChannelAuditEnabled:    getEnvBool("CHANNEL_AUDIT_ENABLED", false),
+		ChannelAuditTimeout:    time.Duration(getEnvInt("CHANNEL_AUDIT_TIMEOUT_MS", 15000)) * time.Millisecond,
+		OpenAIAPIKey:           getEnv("OPENAI_API_KEY", ""),
+		OpenAIBaseURL:          getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		OpenAIModel:            getEnv("OPENAI_MODEL", ""),
 		AdminInitUsername:      getEnv("ADMIN_INIT_USERNAME", ""),
 		AdminInitPassword:      getEnv("ADMIN_INIT_PASSWORD", ""),
 		AdminSessionTTL:        time.Duration(getEnvInt("ADMIN_SESSION_TTL_HOURS", 168)) * time.Hour,
@@ -46,6 +56,20 @@ func getEnvInt(key string, fallback int) int {
 	}
 
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return fallback
 	}

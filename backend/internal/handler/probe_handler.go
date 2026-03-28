@@ -18,14 +18,16 @@ type ProbeHandler struct {
 	repo              *repository.PostgresRepository
 	probeService      *service.ProbeService
 	adminAuth         *service.AdminAuthService
+	systemSettings    *service.SystemSettingsService
 	sessionCookieName string
 }
 
-func NewProbeHandler(repo *repository.PostgresRepository, probeService *service.ProbeService, adminAuth *service.AdminAuthService, sessionCookieName string) *ProbeHandler {
+func NewProbeHandler(repo *repository.PostgresRepository, probeService *service.ProbeService, adminAuth *service.AdminAuthService, systemSettings *service.SystemSettingsService, sessionCookieName string) *ProbeHandler {
 	return &ProbeHandler{
 		repo:              repo,
 		probeService:      probeService,
 		adminAuth:         adminAuth,
+		systemSettings:    systemSettings,
 		sessionCookieName: sessionCookieName,
 	}
 }
@@ -49,6 +51,8 @@ func (h *ProbeHandler) Register(api *gin.RouterGroup) {
 	admin.DELETE("/channel-models/:id", h.deleteChannelModel)
 	admin.PATCH("/probes/:id", h.patchProbe)
 	admin.PATCH("/account", h.updateAdminAccount)
+	admin.GET("/system-settings", h.getSystemSettings)
+	admin.PATCH("/system-settings", h.updateSystemSettings)
 }
 
 func (h *ProbeHandler) health(context *gin.Context) {
