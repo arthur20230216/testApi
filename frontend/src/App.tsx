@@ -382,6 +382,52 @@ function ProbePage() {
                 </div>
               ) : null}
 
+              {result.probe.auditEvidence.length > 0 ? (
+                <div className="list-block">
+                  <h3>调用记录</h3>
+                  <div className="evidence-list">
+                    {result.probe.auditEvidence.map((step, index) => (
+                      <article
+                        className="evidence-card"
+                        key={`${step.kind}-${step.endpoint}-${index}`}
+                      >
+                        <div className="evidence-head">
+                          <strong>
+                            {index + 1}. {formatAuditStepLabel(step.kind)}
+                          </strong>
+                          <span>
+                            {step.method} / {step.status ?? "无响应"} /{" "}
+                            {step.responseTimeMs ?? "-"} ms
+                          </span>
+                        </div>
+                        <p>
+                          <strong>端点：</strong>
+                          {step.endpoint}
+                        </p>
+                        {step.requestBody ? (
+                          <p>
+                            <strong>请求摘要：</strong>
+                            {step.requestBody}
+                          </p>
+                        ) : null}
+                        {step.responseExcerpt ? (
+                          <p>
+                            <strong>响应摘要：</strong>
+                            {step.responseExcerpt}
+                          </p>
+                        ) : null}
+                        {step.errorMessage ? (
+                          <p>
+                            <strong>错误：</strong>
+                            {step.errorMessage}
+                          </p>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="meta-card">
                 <p>模型 ID：{result.probe.modelIds.join(", ") || "无"}</p>
                 <p>命中端点：{result.probe.detectedEndpoint ?? "未命中"}</p>
@@ -1125,6 +1171,19 @@ function formatSuspicionReason(value: string): string {
   }
 
   return value;
+}
+
+function formatAuditStepLabel(value: string): string {
+  switch (value) {
+    case "model_list":
+      return "模型列表探测";
+    case "completion_valid_model":
+      return "期望模型 Completion 探测";
+    case "completion_invalid_model":
+      return "错误模型 Completion 探测";
+    default:
+      return value;
+  }
 }
 
 function parseRoute(hash: string): RouteType {
