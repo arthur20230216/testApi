@@ -78,6 +78,14 @@ type ProbeRecord struct {
 	ResponseHeaders          map[string]string   `json:"responseHeaders"`
 	SuspicionReasons         []string            `json:"suspicionReasons"`
 	Notes                    []string            `json:"notes"`
+	ModelScore               *int                `json:"modelScore"`
+	ModelVerdict             *string             `json:"modelVerdict"`
+	ModelConfidence          *int                `json:"modelConfidence"`
+	ModelSummary             *string             `json:"modelSummary"`
+	ModelSupportingSignals   []string            `json:"modelSupportingSignals"`
+	ModelRiskSignals         []string            `json:"modelRiskSignals"`
+	ModelMissingEvidence     []string            `json:"modelMissingEvidence"`
+	ModelReasoning           *ModelReasoning     `json:"modelReasoning"`
 	ChannelScore             *int                `json:"channelScore"`
 	ChannelVerdict           *string             `json:"channelVerdict"`
 	ChannelConfidence        *int                `json:"channelConfidence"`
@@ -89,8 +97,29 @@ type ProbeRecord struct {
 	ChannelReasoning         *ChannelReasoning   `json:"channelReasoning"`
 	ChannelAuditModel        *string             `json:"channelAuditModel"`
 	ChannelAuditError        *string             `json:"channelAuditError"`
+	AuditEvidence            []ProbeEvidenceStep `json:"auditEvidence"`
 	ErrorMessage             *string             `json:"errorMessage"`
 	RawExcerpt               *string             `json:"rawExcerpt"`
+}
+
+type ProbeEvidenceStep struct {
+	Kind            string            `json:"kind"`
+	Label           string            `json:"label"`
+	Method          string            `json:"method"`
+	Endpoint        string            `json:"endpoint"`
+	RequestBody     *string           `json:"requestBody"`
+	Status          *int              `json:"status"`
+	ResponseTimeMS  *int              `json:"responseTimeMs"`
+	ResponseHeaders map[string]string `json:"responseHeaders"`
+	ResponseExcerpt *string           `json:"responseExcerpt"`
+	ErrorMessage    *string           `json:"errorMessage"`
+}
+
+type ModelReasoning struct {
+	ExpectedModelAssessment string `json:"expectedModelAssessment"`
+	OutputModelAssessment   string `json:"outputModelAssessment"`
+	CapabilityAssessment    string `json:"capabilityAssessment"`
+	FinalAssessment         string `json:"finalAssessment"`
 }
 
 type ChannelConsistency struct {
@@ -118,6 +147,48 @@ type ChannelAuditResult struct {
 	MissingEvidence    []string           `json:"missingEvidence"`
 	ChannelConsistency ChannelConsistency `json:"channelConsistency"`
 	Reasoning          ChannelReasoning   `json:"reasoning"`
+}
+
+type ProbeAuditResult struct {
+	ModelVerdict             string             `json:"modelVerdict"`
+	ModelScore               int                `json:"modelScore"`
+	ModelConfidence          int                `json:"modelConfidence"`
+	ModelSummary             string             `json:"modelSummary"`
+	ModelSupportingSignals   []string           `json:"modelSupportingSignals"`
+	ModelRiskSignals         []string           `json:"modelRiskSignals"`
+	ModelMissingEvidence     []string           `json:"modelMissingEvidence"`
+	ModelReasoning           ModelReasoning     `json:"modelReasoning"`
+	ChannelVerdict           string             `json:"channelVerdict"`
+	ChannelScore             int                `json:"channelScore"`
+	ChannelConfidence        int                `json:"channelConfidence"`
+	ChannelSummary           string             `json:"channelSummary"`
+	ChannelSupportingSignals []string           `json:"channelSupportingSignals"`
+	ChannelRiskSignals       []string           `json:"channelRiskSignals"`
+	ChannelMissingEvidence   []string           `json:"channelMissingEvidence"`
+	ChannelConsistency       ChannelConsistency `json:"channelConsistency"`
+	ChannelReasoning         ChannelReasoning   `json:"channelReasoning"`
+}
+
+func (r ProbeAuditResult) Validate() error {
+	if !slices.Contains([]string{"trusted", "needs_review", "high_risk"}, r.ModelVerdict) {
+		return fmt.Errorf("modelVerdict is invalid")
+	}
+	if r.ModelScore < 0 || r.ModelScore > 100 {
+		return fmt.Errorf("modelScore must be between 0 and 100")
+	}
+	if r.ModelConfidence < 0 || r.ModelConfidence > 100 {
+		return fmt.Errorf("modelConfidence must be between 0 and 100")
+	}
+	if !slices.Contains([]string{"trusted", "needs_review", "high_risk"}, r.ChannelVerdict) {
+		return fmt.Errorf("channelVerdict is invalid")
+	}
+	if r.ChannelScore < 0 || r.ChannelScore > 100 {
+		return fmt.Errorf("channelScore must be between 0 and 100")
+	}
+	if r.ChannelConfidence < 0 || r.ChannelConfidence > 100 {
+		return fmt.Errorf("channelConfidence must be between 0 and 100")
+	}
+	return nil
 }
 
 func (r ChannelAuditResult) Validate() error {

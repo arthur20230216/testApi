@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS probes (
   response_headers_json JSONB NOT NULL,
   suspicion_reasons_json JSONB NOT NULL,
   notes_json JSONB NOT NULL,
+  model_score INTEGER,
+  model_verdict TEXT,
+  model_confidence INTEGER,
+  model_summary TEXT,
+  model_supporting_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  model_risk_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  model_missing_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  model_reasoning_json JSONB,
   channel_score INTEGER,
   channel_verdict TEXT,
   channel_confidence INTEGER,
@@ -34,6 +42,7 @@ CREATE TABLE IF NOT EXISTS probes (
   channel_reasoning_json JSONB,
   channel_audit_model TEXT,
   channel_audit_error TEXT,
+  audit_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   error_message TEXT,
   raw_excerpt TEXT
 );
@@ -55,6 +64,12 @@ CREATE TABLE IF NOT EXISTS channel_models (
 
 CREATE INDEX IF NOT EXISTS idx_channel_models_channel_name ON channel_models(channel_name);
 CREATE INDEX IF NOT EXISTS idx_channel_models_is_enabled ON channel_models(is_enabled);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  setting_key TEXT PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS admin_users (
   id BIGSERIAL PRIMARY KEY,

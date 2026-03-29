@@ -64,7 +64,7 @@ if [[ ! -f "$APP_ROOT/backend/.env" ]]; then
 fi
 
 pushd "$APP_ROOT/backend" >/dev/null
-go mod tidy
+go mod download
 go build -o modelprobe-server ./cmd/server
 popd >/dev/null
 

@@ -42,6 +42,14 @@ cd /opt/modelprobe
 APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh
 ```
 
+说明：
+- `backend/.env`
+- `deploy/postgres.env`
+- `frontend/.env.production`
+- `backend/modelprobe-server`
+
+这些都属于服务器本地文件，不应该提交到 Git。
+
 ### 记住一个原则
 
 - 数据库脚本只在第一次部署时跑
@@ -368,7 +376,7 @@ APP_ROOT=/opt/modelprobe ./deploy/scripts/deploy_app.sh --first-time
 
 ```bash
 cd /opt/modelprobe/backend
-go mod tidy
+go mod download
 go build -o modelprobe-server ./cmd/server
 ```
 
@@ -492,7 +500,7 @@ git pull origin main
 
 ```bash
 cd /opt/modelprobe/backend
-go mod tidy
+go mod download
 go build -o modelprobe-server ./cmd/server
 sudo systemctl restart modelprobe-backend
 ```

@@ -1,7 +1,11 @@
 .reference-sub2api/
 frontend/node_modules/
 frontend/dist/
+frontend/.env.production
 backend/bin/
 backend/*.exe
+backend/modelprobe-server
+backend/.env
+deploy/postgres.env
 node_modules/
 dist/

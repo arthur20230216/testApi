@@ -327,6 +327,55 @@ function ProbePage() {
                 )}
               </div>
 
+              {result.probe.modelVerdict || result.probe.channelVerdict ? (
+                <div className="result-grid">
+                  <article>
+                    <span>Model Audit</span>
+                    <strong>
+                      {result.probe.modelVerdict ?? "not_run"} /{" "}
+                      {result.probe.modelScore ?? "-"}
+                    </strong>
+                  </article>
+                  <article>
+                    <span>Channel Audit</span>
+                    <strong>
+                      {result.probe.channelVerdict ?? "not_run"} /{" "}
+                      {result.probe.channelScore ?? "-"}
+                    </strong>
+                  </article>
+                  <article>
+                    <span>Audit Evidence</span>
+                    <strong>{result.probe.auditEvidence.length}</strong>
+                  </article>
+                  <article>
+                    <span>Audit Model</span>
+                    <strong>{result.probe.channelAuditModel ?? "not_set"}</strong>
+                  </article>
+                </div>
+              ) : null}
+
+              {result.probe.modelSummary || result.probe.channelSummary ? (
+                <div className="list-block">
+                  <h3>AI Audit Summary</h3>
+                  {result.probe.modelSummary ? (
+                    <p>
+                      <strong>Model:</strong> {result.probe.modelSummary}
+                    </p>
+                  ) : null}
+                  {result.probe.channelSummary ? (
+                    <p>
+                      <strong>Channel:</strong> {result.probe.channelSummary}
+                    </p>
+                  ) : null}
+                  {result.probe.channelAuditError ? (
+                    <p>
+                      <strong>Audit Error:</strong>{" "}
+                      {result.probe.channelAuditError}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="meta-card">
                 <p>模型 ID：{result.probe.modelIds.join(", ") || "无"}</p>
                 <p>命中端点：{result.probe.detectedEndpoint ?? "未命中"}</p>

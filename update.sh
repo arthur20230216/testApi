@@ -8,6 +8,7 @@ BRANCH="${BRANCH:-main}"
 
 if [[ ! -f "$DEPLOY_SCRIPT" ]]; then
   echo "未找到部署脚本: $DEPLOY_SCRIPT"
+  git status --short
   exit 1
 fi
 

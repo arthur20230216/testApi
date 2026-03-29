@@ -24,10 +24,12 @@ const probeSelectColumns = `
 	claimed_channel, expected_model_family, status, rule_based_score, rule_based_verdict,
 	trust_score, verdict, http_status, detected_endpoint, response_time_ms, is_openai_compatible,
 	primary_family, detected_families_json, model_ids_json, response_headers_json,
-	suspicion_reasons_json, notes_json, channel_score, channel_verdict, channel_confidence,
+	suspicion_reasons_json, notes_json, model_score, model_verdict, model_confidence,
+	model_summary, model_supporting_signals_json, model_risk_signals_json, model_missing_evidence_json,
+	model_reasoning_json, channel_score, channel_verdict, channel_confidence,
 	channel_summary, channel_supporting_signals_json, channel_risk_signals_json,
 	channel_missing_evidence_json, channel_consistency_json, channel_reasoning_json,
-	channel_audit_model, channel_audit_error, error_message, raw_excerpt
+	channel_audit_model, channel_audit_error, audit_evidence_json, error_message, raw_excerpt
 `
 
 func NewPostgresRepository(databaseURL string) (*PostgresRepository, error) {
@@ -85,6 +87,14 @@ func (r *PostgresRepository) initSchema() error {
 		response_headers_json JSONB NOT NULL,
 		suspicion_reasons_json JSONB NOT NULL,
 		notes_json JSONB NOT NULL,
+		model_score INTEGER,
+		model_verdict TEXT,
+		model_confidence INTEGER,
+		model_summary TEXT,
+		model_supporting_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		model_risk_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		model_missing_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+		model_reasoning_json JSONB,
 		channel_score INTEGER,
 		channel_verdict TEXT,
 		channel_confidence INTEGER,
@@ -96,12 +106,21 @@ func (r *PostgresRepository) initSchema() error {
 		channel_reasoning_json JSONB,
 		channel_audit_model TEXT,
 		channel_audit_error TEXT,
+		audit_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
 		error_message TEXT,
 		raw_excerpt TEXT
 	);
 
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS rule_based_score INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS rule_based_verdict TEXT NOT NULL DEFAULT 'needs_review';
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_score INTEGER;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_verdict TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_confidence INTEGER;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_summary TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_supporting_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_risk_signals_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_missing_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS model_reasoning_json JSONB;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_score INTEGER;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_verdict TEXT;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_confidence INTEGER;
@@ -113,6 +132,7 @@ func (r *PostgresRepository) initSchema() error {
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_reasoning_json JSONB;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_audit_model TEXT;
 	ALTER TABLE probes ADD COLUMN IF NOT EXISTS channel_audit_error TEXT;
+	ALTER TABLE probes ADD COLUMN IF NOT EXISTS audit_evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 	CREATE INDEX IF NOT EXISTS idx_probes_created_at ON probes(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_probes_station_name ON probes(station_name);
@@ -206,11 +226,16 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 	responseHeadersJSON, _ := json.Marshal(probe.ResponseHeaders)
 	suspicionReasonsJSON, _ := json.Marshal(probe.SuspicionReasons)
 	notesJSON, _ := json.Marshal(probe.Notes)
+	modelSupportingSignalsJSON, _ := json.Marshal(probe.ModelSupportingSignals)
+	modelRiskSignalsJSON, _ := json.Marshal(probe.ModelRiskSignals)
+	modelMissingEvidenceJSON, _ := json.Marshal(probe.ModelMissingEvidence)
+	modelReasoningJSON, _ := json.Marshal(probe.ModelReasoning)
 	channelSupportingSignalsJSON, _ := json.Marshal(probe.ChannelSupportingSignals)
 	channelRiskSignalsJSON, _ := json.Marshal(probe.ChannelRiskSignals)
 	channelMissingEvidenceJSON, _ := json.Marshal(probe.ChannelMissingEvidence)
 	channelConsistencyJSON, _ := json.Marshal(probe.ChannelConsistency)
 	channelReasoningJSON, _ := json.Marshal(probe.ChannelReasoning)
+	auditEvidenceJSON, _ := json.Marshal(probe.AuditEvidence)
 
 	createdAt, err := time.Parse(time.RFC3339Nano, probe.CreatedAt)
 	if err != nil {
@@ -224,16 +249,19 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 		trust_score, verdict, http_status,
 		detected_endpoint, response_time_ms, is_openai_compatible, primary_family,
 		detected_families_json, model_ids_json, response_headers_json, suspicion_reasons_json,
-		notes_json, channel_score, channel_verdict, channel_confidence, channel_summary,
+		notes_json, model_score, model_verdict, model_confidence, model_summary,
+		model_supporting_signals_json, model_risk_signals_json, model_missing_evidence_json,
+		model_reasoning_json, channel_score, channel_verdict, channel_confidence, channel_summary,
 		channel_supporting_signals_json, channel_risk_signals_json, channel_missing_evidence_json,
 		channel_consistency_json, channel_reasoning_json, channel_audit_model, channel_audit_error,
-		error_message, raw_excerpt
+		audit_evidence_json, error_message, raw_excerpt
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 		$13, $14, $15, $16, $17, $18, $19,
 		$20::jsonb, $21::jsonb, $22::jsonb, $23::jsonb, $24::jsonb,
 		$25, $26, $27, $28, $29::jsonb, $30::jsonb, $31::jsonb,
-		$32::jsonb, $33::jsonb, $34, $35, $36, $37
+		$32::jsonb, $33, $34, $35, $36, $37::jsonb, $38::jsonb, $39::jsonb,
+		$40::jsonb, $41::jsonb, $42, $43, $44::jsonb, $45, $46
 	)
 	`
 
@@ -264,6 +292,14 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 		string(responseHeadersJSON),
 		string(suspicionReasonsJSON),
 		string(notesJSON),
+		probe.ModelScore,
+		probe.ModelVerdict,
+		probe.ModelConfidence,
+		probe.ModelSummary,
+		string(modelSupportingSignalsJSON),
+		string(modelRiskSignalsJSON),
+		string(modelMissingEvidenceJSON),
+		nullableJSON(modelReasoningJSON),
 		probe.ChannelScore,
 		probe.ChannelVerdict,
 		probe.ChannelConfidence,
@@ -275,6 +311,7 @@ func (r *PostgresRepository) CreateProbe(ctx context.Context, probe model.ProbeR
 		nullableJSON(channelReasoningJSON),
 		probe.ChannelAuditModel,
 		probe.ChannelAuditError,
+		string(auditEvidenceJSON),
 		probe.ErrorMessage,
 		probe.RawExcerpt,
 	)
@@ -806,14 +843,20 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	var detectedEndpoint sql.NullString
 	var responseTimeMS sql.NullInt64
 	var primaryFamily sql.NullString
+	var modelScore sql.NullInt64
+	var modelVerdict sql.NullString
+	var modelConfidence sql.NullInt64
+	var modelSummary sql.NullString
 	var channelScore sql.NullInt64
 	var channelVerdict sql.NullString
 	var channelConfidence sql.NullInt64
 	var channelSummary sql.NullString
+	var modelReasoningJSON []byte
 	var channelConsistencyJSON []byte
 	var channelReasoningJSON []byte
 	var channelAuditModel sql.NullString
 	var channelAuditError sql.NullString
+	var auditEvidenceJSON []byte
 	var errorMessage sql.NullString
 	var rawExcerpt sql.NullString
 	var isOpenAICompatible bool
@@ -822,6 +865,9 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	var responseHeadersJSON []byte
 	var suspicionReasonsJSON []byte
 	var notesJSON []byte
+	var modelSupportingSignalsJSON []byte
+	var modelRiskSignalsJSON []byte
+	var modelMissingEvidenceJSON []byte
 	var channelSupportingSignalsJSON []byte
 	var channelRiskSignalsJSON []byte
 	var channelMissingEvidenceJSON []byte
@@ -851,6 +897,14 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 		&responseHeadersJSON,
 		&suspicionReasonsJSON,
 		&notesJSON,
+		&modelScore,
+		&modelVerdict,
+		&modelConfidence,
+		&modelSummary,
+		&modelSupportingSignalsJSON,
+		&modelRiskSignalsJSON,
+		&modelMissingEvidenceJSON,
+		&modelReasoningJSON,
 		&channelScore,
 		&channelVerdict,
 		&channelConfidence,
@@ -862,6 +916,7 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 		&channelReasoningJSON,
 		&channelAuditModel,
 		&channelAuditError,
+		&auditEvidenceJSON,
 		&errorMessage,
 		&rawExcerpt,
 	)
@@ -878,6 +933,10 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 	record.DetectedEndpoint = nullStringPtr(detectedEndpoint)
 	record.ResponseTimeMS = nullIntPtr(responseTimeMS)
 	record.PrimaryFamily = nullStringPtr(primaryFamily)
+	record.ModelScore = nullIntPtr(modelScore)
+	record.ModelVerdict = nullStringPtr(modelVerdict)
+	record.ModelConfidence = nullIntPtr(modelConfidence)
+	record.ModelSummary = nullStringPtr(modelSummary)
 	record.ChannelScore = nullIntPtr(channelScore)
 	record.ChannelVerdict = nullStringPtr(channelVerdict)
 	record.ChannelConfidence = nullIntPtr(channelConfidence)
@@ -908,6 +967,18 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 		return nil, fmt.Errorf("decode notes: %w", err)
 	}
 
+	if err := json.Unmarshal(modelSupportingSignalsJSON, &record.ModelSupportingSignals); err != nil {
+		return nil, fmt.Errorf("decode model supporting signals: %w", err)
+	}
+
+	if err := json.Unmarshal(modelRiskSignalsJSON, &record.ModelRiskSignals); err != nil {
+		return nil, fmt.Errorf("decode model risk signals: %w", err)
+	}
+
+	if err := json.Unmarshal(modelMissingEvidenceJSON, &record.ModelMissingEvidence); err != nil {
+		return nil, fmt.Errorf("decode model missing evidence: %w", err)
+	}
+
 	if err := json.Unmarshal(channelSupportingSignalsJSON, &record.ChannelSupportingSignals); err != nil {
 		return nil, fmt.Errorf("decode channel supporting signals: %w", err)
 	}
@@ -918,6 +989,14 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 
 	if err := json.Unmarshal(channelMissingEvidenceJSON, &record.ChannelMissingEvidence); err != nil {
 		return nil, fmt.Errorf("decode channel missing evidence: %w", err)
+	}
+
+	if len(modelReasoningJSON) > 0 && string(modelReasoningJSON) != "null" {
+		var reasoning model.ModelReasoning
+		if err := json.Unmarshal(modelReasoningJSON, &reasoning); err != nil {
+			return nil, fmt.Errorf("decode model reasoning: %w", err)
+		}
+		record.ModelReasoning = &reasoning
 	}
 
 	if len(channelConsistencyJSON) > 0 && string(channelConsistencyJSON) != "null" {
@@ -934,6 +1013,10 @@ func scanProbe(row scanner) (*model.ProbeRecord, error) {
 			return nil, fmt.Errorf("decode channel reasoning: %w", err)
 		}
 		record.ChannelReasoning = &reasoning
+	}
+
+	if err := json.Unmarshal(auditEvidenceJSON, &record.AuditEvidence); err != nil {
+		return nil, fmt.Errorf("decode audit evidence: %w", err)
 	}
 
 	return &record, nil

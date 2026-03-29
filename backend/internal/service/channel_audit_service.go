@@ -13,25 +13,19 @@ import (
 	"modelprobe/backend/internal/model"
 )
 
-const channelAuditSystemPrompt = `You are an AI channel authenticity auditor.
+const probeAuditSystemPrompt = `You are an API authenticity auditor.
 
-Your job is not to judge usability. Your only job is to judge whether the claimed channel is credible based on technical evidence.
-
-You must strictly evaluate evidence and never trust branding or marketing text.
-
-Core goals:
-1. Decide whether the claimedChannel matches the observed model pool and endpoint behavior.
-2. Detect wrapper behavior, mixed provider pools, model relabeling, or channel-name impersonation.
+Your job is to judge two things separately:
+1. model authenticity: whether the endpoint appears to route the requested model honestly, rather than silently relabeling, falling back, or mixing providers
+2. channel authenticity: whether the claimed channel identity is actually supported by the technical evidence
 
 Rules:
-- Focus on API behavior, model IDs, response format, headers, error semantics, endpoint patterns, and configured channel-model allowlist.
-- Separate model authenticity from channel authenticity. A model can look real while the claimed channel is still misleading.
-- Penalize generic OpenAI-compatible wrappers that do not prove channel identity.
-- Penalize mixed pools exposed under a single claimed channel.
-- If evidence is insufficient, return needs_review and explain what evidence is missing.
-- Do not speculate beyond the provided evidence.
-
-Return strict JSON only.`
+- Never trust branding text, self-report alone, or marketing claims.
+- Use strongest evidence first: completion response model field, invalid-model error behavior, model list, headers, endpoint paths, and prompt-response behavior.
+- A technically usable generic OpenAI-compatible wrapper is not enough to prove the claimed channel identity.
+- Distinguish insufficient evidence from contradictory evidence. If uncertain, return needs_review and list missing evidence.
+- Be strict about mixed-provider pools, model relabeling, and claimed-channel mismatch.
+- Return JSON only and follow the schema exactly.`
 
 type ChannelAuditService struct {
 	settingsService *SystemSettingsService
@@ -50,16 +44,10 @@ func (s *ChannelAuditService) Enabled() bool {
 func (s *ChannelAuditService) Audit(
 	ctx context.Context,
 	input model.ProbeRequest,
-	attempt probeAttempt,
-	modelIDs []string,
-	families []string,
-	compatibility bool,
+	evidence []model.ProbeEvidenceStep,
+	auditContext probeAuditContext,
 	channelModels map[string][]string,
-	ruleBasedScore int,
-	ruleBasedVerdict string,
-	suspicionReasons []string,
-	notes []string,
-) (*model.ChannelAuditResult, error) {
+) (*model.ProbeAuditResult, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -93,7 +81,7 @@ func (s *ChannelAuditService) Audit(
 				"content": []map[string]string{
 					{
 						"type": "input_text",
-						"text": channelAuditSystemPrompt,
+						"text": probeAuditSystemPrompt,
 					},
 				},
 			},
@@ -102,7 +90,7 @@ func (s *ChannelAuditService) Audit(
 				"content": []map[string]string{
 					{
 						"type": "input_text",
-						"text": buildChannelAuditUserPrompt(input, attempt, modelIDs, families, compatibility, channelModels, ruleBasedScore, ruleBasedVerdict, suspicionReasons, notes),
+						"text": buildProbeAuditUserPrompt(input, evidence, auditContext, channelModels),
 					},
 				},
 			},
@@ -110,9 +98,9 @@ func (s *ChannelAuditService) Audit(
 		"text": map[string]any{
 			"format": map[string]any{
 				"type":   "json_schema",
-				"name":   "channel_auth_audit",
+				"name":   "probe_auth_audit",
 				"strict": true,
-				"schema": channelAuditJSONSchema(),
+				"schema": probeAuditJSONSchema(),
 			},
 		},
 	}
@@ -148,7 +136,7 @@ func (s *ChannelAuditService) Audit(
 		return nil, fmt.Errorf("extract channel audit output: %w", err)
 	}
 
-	var result model.ChannelAuditResult
+	var result model.ProbeAuditResult
 	if err := json.Unmarshal([]byte(jsonText), &result); err != nil {
 		return nil, fmt.Errorf("decode channel audit JSON: %w", err)
 	}
@@ -159,51 +147,59 @@ func (s *ChannelAuditService) Audit(
 	return &result, nil
 }
 
-func buildChannelAuditUserPrompt(
+func buildProbeAuditUserPrompt(
 	input model.ProbeRequest,
-	attempt probeAttempt,
-	modelIDs []string,
-	families []string,
-	compatibility bool,
+	evidence []model.ProbeEvidenceStep,
+	auditContext probeAuditContext,
 	channelModels map[string][]string,
-	ruleBasedScore int,
-	ruleBasedVerdict string,
-	suspicionReasons []string,
-	notes []string,
 ) string {
 	payload := map[string]any{
-		"stationName":          strings.TrimSpace(input.StationName),
-		"groupName":            strings.TrimSpace(input.GroupName),
-		"baseUrl":              normalizeBaseURL(input.BaseURL),
-		"claimedChannel":       strings.TrimSpace(input.ClaimedChannel),
-		"expectedModelFamily":  strings.TrimSpace(input.ExpectedModelFamily),
-		"detectedEndpoint":     attempt.Endpoint,
-		"httpStatus":           attempt.Status,
-		"responseTimeMs":       attempt.ResponseTimeMS,
-		"isOpenAICompatible":   compatibility,
-		"primaryFamily":        valueOrEmpty(inferPrimaryFamily(families)),
-		"detectedFamilies":     families,
-		"modelIds":             modelIDs,
-		"responseHeaders":      attempt.Headers,
-		"errorMessage":         valueOrEmpty(attempt.ErrorMessage),
-		"rawExcerpt":           truncateText(attempt.BodyText, 1200),
-		"ruleBasedScore":       ruleBasedScore,
-		"ruleBasedVerdict":     ruleBasedVerdict,
-		"ruleSuspicionReasons": suspicionReasons,
-		"ruleNotes":            notes,
-		"channelModelMap":      channelModels,
+		"stationName":         strings.TrimSpace(input.StationName),
+		"groupName":           strings.TrimSpace(input.GroupName),
+		"baseUrl":             normalizeBaseURL(input.BaseURL),
+		"claimedChannel":      strings.TrimSpace(input.ClaimedChannel),
+		"expectedModelFamily": strings.TrimSpace(input.ExpectedModelFamily),
+		"channelAllowlist":    channelModels[strings.ToLower(strings.TrimSpace(input.ClaimedChannel))],
+		"channelModelMap":     channelModels,
+		"observations": map[string]any{
+			"availableModelIds":       auditContext.AvailableModelIDs,
+			"completionResponseModel": valueOrEmpty(auditContext.CompletionResponseModel),
+			"completionAssistantText": truncateText(valueOrEmpty(auditContext.CompletionAssistantText), 900),
+			"completionFinishReason":  valueOrEmpty(auditContext.CompletionFinishReason),
+			"systemFingerprint":       valueOrEmpty(auditContext.SystemFingerprint),
+			"detectedFamilies":        auditContext.DetectedFamilies,
+			"primaryFamily":           valueOrEmpty(auditContext.PrimaryFamily),
+			"isOpenAICompatible":      auditContext.IsOpenAICompatible,
+		},
+		"ruleBasedAnalysis": map[string]any{
+			"score":            auditContext.RuleBasedScore,
+			"verdict":          auditContext.RuleBasedVerdict,
+			"suspicionReasons": auditContext.SuspicionReasons,
+			"notes":            auditContext.Notes,
+		},
+		"evidenceSteps": evidence,
 	}
 
 	serialized, _ := json.MarshalIndent(payload, "", "  ")
 
-	return strings.TrimSpace(`Audit the authenticity of the claimed channel using the evidence below.
+	return strings.TrimSpace(`Audit the target endpoint using the evidence below.
 
-Questions you must answer:
-1. Does claimedChannel match the observed model pool?
-2. Does claimedChannel match endpoint behavior and response shape?
-3. Does this look like a generic OpenAI wrapper instead of a real channel identity?
-4. Is this likely a mixed-provider pool presented as one channel?
-5. What is the final channel authenticity verdict and score?
+You must answer both tracks:
+1. Model authenticity:
+- Does the endpoint appear to route the requested model honestly?
+- Is there evidence of fallback, relabeling, mixed routing, or fake identity?
+- How strong is the evidence from completion response model, prompt response, model list, and invalid-model behavior?
+
+2. Channel authenticity:
+- Does claimedChannel match the exposed model pool?
+- Does claimedChannel match endpoint behavior and error semantics?
+- Does this look like a generic wrapper or a mixed-provider pool instead of a real channel identity?
+
+Return:
+- one verdict/score/confidence/summary for model authenticity
+- one verdict/score/confidence/summary for channel authenticity
+- supporting signals, risk signals, and missing evidence for each track
+- concise reasoning fields
 
 Evidence:
 ` + string(serialized) + `
@@ -211,11 +207,30 @@ Evidence:
 Return JSON only.`)
 }
 
-func channelAuditJSONSchema() map[string]any {
+func probeAuditJSONSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
+			"modelVerdict": map[string]any{
+				"type": "string",
+				"enum": []string{"trusted", "needs_review", "high_risk"},
+			},
+			"modelScore": map[string]any{
+				"type":    "integer",
+				"minimum": 0,
+				"maximum": 100,
+			},
+			"modelConfidence": map[string]any{
+				"type":    "integer",
+				"minimum": 0,
+				"maximum": 100,
+			},
+			"modelSummary":           map[string]any{"type": "string"},
+			"modelSupportingSignals": stringArraySchema(),
+			"modelRiskSignals":       stringArraySchema(),
+			"modelMissingEvidence":   stringArraySchema(),
+			"modelReasoning":         modelReasoningSchema(),
 			"channelVerdict": map[string]any{
 				"type": "string",
 				"enum": []string{"trusted", "needs_review", "high_risk"},
@@ -225,62 +240,91 @@ func channelAuditJSONSchema() map[string]any {
 				"minimum": 0,
 				"maximum": 100,
 			},
-			"confidence": map[string]any{
-				"type":    "integer",
-				"minimum": 0,
-				"maximum": 100,
-			},
-			"summary": map[string]any{
-				"type": "string",
-			},
-			"supportingSignals": stringArraySchema(),
-			"riskSignals":       stringArraySchema(),
-			"missingEvidence":   stringArraySchema(),
-			"channelConsistency": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"claimedChannelMatchesModelPool":        map[string]any{"type": "boolean"},
-					"claimedChannelMatchesEndpointBehavior": map[string]any{"type": "boolean"},
-					"claimedChannelMatchesErrorStyle":       map[string]any{"type": "boolean"},
-					"isLikelyGenericOpenAIWrapper":          map[string]any{"type": "boolean"},
-					"isLikelyMixedProviderPool":             map[string]any{"type": "boolean"},
-				},
-				"required": []string{
-					"claimedChannelMatchesModelPool",
-					"claimedChannelMatchesEndpointBehavior",
-					"claimedChannelMatchesErrorStyle",
-					"isLikelyGenericOpenAIWrapper",
-					"isLikelyMixedProviderPool",
-				},
-			},
-			"reasoning": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"modelPoolAssessment":  map[string]any{"type": "string"},
-					"endpointAssessment":   map[string]any{"type": "string"},
-					"errorStyleAssessment": map[string]any{"type": "string"},
-					"finalAssessment":      map[string]any{"type": "string"},
-				},
-				"required": []string{
-					"modelPoolAssessment",
-					"endpointAssessment",
-					"errorStyleAssessment",
-					"finalAssessment",
-				},
-			},
+			"channelConfidence":        map[string]any{"type": "integer", "minimum": 0, "maximum": 100},
+			"channelSummary":           map[string]any{"type": "string"},
+			"channelSupportingSignals": stringArraySchema(),
+			"channelRiskSignals":       stringArraySchema(),
+			"channelMissingEvidence":   stringArraySchema(),
+			"channelConsistency":       channelConsistencySchema(),
+			"channelReasoning":         channelReasoningSchema(),
 		},
 		"required": []string{
+			"modelVerdict",
+			"modelScore",
+			"modelConfidence",
+			"modelSummary",
+			"modelSupportingSignals",
+			"modelRiskSignals",
+			"modelMissingEvidence",
+			"modelReasoning",
 			"channelVerdict",
 			"channelScore",
-			"confidence",
-			"summary",
-			"supportingSignals",
-			"riskSignals",
-			"missingEvidence",
+			"channelConfidence",
+			"channelSummary",
+			"channelSupportingSignals",
+			"channelRiskSignals",
+			"channelMissingEvidence",
 			"channelConsistency",
-			"reasoning",
+			"channelReasoning",
+		},
+	}
+}
+
+func modelReasoningSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"expectedModelAssessment": map[string]any{"type": "string"},
+			"outputModelAssessment":   map[string]any{"type": "string"},
+			"capabilityAssessment":    map[string]any{"type": "string"},
+			"finalAssessment":         map[string]any{"type": "string"},
+		},
+		"required": []string{
+			"expectedModelAssessment",
+			"outputModelAssessment",
+			"capabilityAssessment",
+			"finalAssessment",
+		},
+	}
+}
+
+func channelConsistencySchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"claimedChannelMatchesModelPool":        map[string]any{"type": "boolean"},
+			"claimedChannelMatchesEndpointBehavior": map[string]any{"type": "boolean"},
+			"claimedChannelMatchesErrorStyle":       map[string]any{"type": "boolean"},
+			"isLikelyGenericOpenAIWrapper":          map[string]any{"type": "boolean"},
+			"isLikelyMixedProviderPool":             map[string]any{"type": "boolean"},
+		},
+		"required": []string{
+			"claimedChannelMatchesModelPool",
+			"claimedChannelMatchesEndpointBehavior",
+			"claimedChannelMatchesErrorStyle",
+			"isLikelyGenericOpenAIWrapper",
+			"isLikelyMixedProviderPool",
+		},
+	}
+}
+
+func channelReasoningSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"modelPoolAssessment":  map[string]any{"type": "string"},
+			"endpointAssessment":   map[string]any{"type": "string"},
+			"errorStyleAssessment": map[string]any{"type": "string"},
+			"finalAssessment":      map[string]any{"type": "string"},
+		},
+		"required": []string{
+			"modelPoolAssessment",
+			"endpointAssessment",
+			"errorStyleAssessment",
+			"finalAssessment",
 		},
 	}
 }
@@ -335,4 +379,12 @@ func extractResponseOutputText(body []byte) (string, error) {
 	}
 
 	return "", fmt.Errorf("responses payload contains no text content")
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }

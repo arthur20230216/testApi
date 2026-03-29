@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,20 +16,60 @@ import (
 	"modelprobe/backend/internal/model"
 )
 
+const probeUserAgent = "model-probe-go/1.0"
+
 type ProbeService struct {
 	client              *http.Client
 	timeout             time.Duration
 	channelAuditService *ChannelAuditService
 }
 
+type probeStepSpec struct {
+	Kind        string
+	Label       string
+	Method      string
+	Endpoint    string
+	RequestBody *string
+}
+
 type probeAttempt struct {
+	Kind           string
+	Label          string
+	Method         string
 	Endpoint       string
+	RequestBody    *string
 	Status         *int
 	ResponseTimeMS int
 	Headers        map[string]string
 	BodyText       string
 	BodyJSON       any
 	ErrorMessage   *string
+}
+
+type completionObservation struct {
+	ResponseModel     *string
+	AssistantText     *string
+	FinishReason      *string
+	SystemFingerprint *string
+	PromptTokens      *int
+	CompletionTokens  *int
+	TotalTokens       *int
+	HasChoices        bool
+}
+
+type probeAuditContext struct {
+	AvailableModelIDs       []string
+	CompletionResponseModel *string
+	CompletionAssistantText *string
+	CompletionFinishReason  *string
+	SystemFingerprint       *string
+	DetectedFamilies        []string
+	PrimaryFamily           *string
+	IsOpenAICompatible      bool
+	RuleBasedScore          int
+	RuleBasedVerdict        string
+	SuspicionReasons        []string
+	Notes                   []string
 }
 
 type familyRule struct {
@@ -47,7 +88,7 @@ var modelFamilyRules = []familyRule{
 	{Family: "llama", Patterns: compilePatterns(`llama`, `meta[- ]?llama`)},
 	{Family: "kimi", Patterns: compilePatterns(`kimi`, `moonshot`)},
 	{Family: "kiro", Patterns: compilePatterns(`kiro`)},
-	{Family: "antigravity", Patterns: compilePatterns(`anti[-_ ]?gravity`, `反重力`)},
+	{Family: "antigravity", Patterns: compilePatterns(`anti[-_ ]?gravity`)},
 }
 
 var clearClaimMap = map[string]string{
@@ -91,21 +132,67 @@ func NewProbeService(timeout time.Duration, channelAuditService *ChannelAuditSer
 }
 
 func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, channelModels map[string][]string) (model.ProbeRecord, error) {
-	endpoints := buildModelEndpoints(input.BaseURL)
-	attempts := make([]probeAttempt, 0, len(endpoints))
-
-	for _, endpoint := range endpoints {
-		attempts = append(attempts, s.attemptProbe(ctx, endpoint, input.APIKey))
+	modelAttempts := make([]probeAttempt, 0, 2)
+	for _, endpoint := range buildModelEndpoints(input.BaseURL) {
+		modelAttempts = append(modelAttempts, s.attemptProbe(ctx, probeStepSpec{
+			Kind:     "model_list",
+			Label:    "List models",
+			Method:   http.MethodGet,
+			Endpoint: endpoint,
+		}, input.APIKey))
 	}
 
-	attempt := pickBestAttempt(attempts)
-	rawExcerpt := nullableString(truncateText(attempt.BodyText, 1500))
-	modelIDs := collectModelIDs(attempt.BodyJSON)
-	families := detectFamilies(append(modelIDs, valueOrEmpty(rawExcerpt)))
-	compatibility := isOpenAICompatible(attempt.BodyJSON, len(modelIDs) > 0)
+	validCompletionBody := buildCompletionProbeBody(strings.TrimSpace(input.ExpectedModelFamily))
+	completionAttempts := make([]probeAttempt, 0, 2)
+	chatEndpoints := buildChatCompletionEndpoints(input.BaseURL)
+	for _, endpoint := range chatEndpoints {
+		completionAttempts = append(completionAttempts, s.attemptProbe(ctx, probeStepSpec{
+			Kind:        "completion_valid_model",
+			Label:       "Completion with expected model",
+			Method:      http.MethodPost,
+			Endpoint:    endpoint,
+			RequestBody: &validCompletionBody,
+		}, input.APIKey))
+	}
+
+	invalidCompletionBody := buildInvalidModelProbeBody()
+	invalidModelAttempts := make([]probeAttempt, 0, len(chatEndpoints))
+	for _, endpoint := range chatEndpoints {
+		invalidModelAttempts = append(invalidModelAttempts, s.attemptProbe(ctx, probeStepSpec{
+			Kind:        "completion_invalid_model",
+			Label:       "Completion with invalid model",
+			Method:      http.MethodPost,
+			Endpoint:    endpoint,
+			RequestBody: &invalidCompletionBody,
+		}, input.APIKey))
+	}
+
+	allAttempts := make([]probeAttempt, 0, len(modelAttempts)+len(completionAttempts)+len(invalidModelAttempts))
+	allAttempts = append(allAttempts, modelAttempts...)
+	allAttempts = append(allAttempts, completionAttempts...)
+	allAttempts = append(allAttempts, invalidModelAttempts...)
+	evidence := buildEvidenceSteps(allAttempts)
+
+	bestModelAttempt := pickBestModelAttempt(modelAttempts)
+	bestCompletionAttempt := pickBestCompletionAttempt(completionAttempts)
+	bestInvalidAttempt := pickBestInvalidModelAttempt(invalidModelAttempts)
+	completion := extractCompletionObservation(bestCompletionAttempt.BodyJSON)
+
+	availableModelIDs := collectModelIDs(bestModelAttempt.BodyJSON)
+	allObservedModelIDs := append([]string{}, availableModelIDs...)
+	if completion.ResponseModel != nil {
+		allObservedModelIDs = append(allObservedModelIDs, *completion.ResponseModel)
+	}
+	allObservedModelIDs = uniqueStrings(allObservedModelIDs)
+
+	families := detectFamilies(buildFamilyEvidenceValues(allAttempts, allObservedModelIDs, completion))
+	compatibility := isOpenAICompatible(bestModelAttempt.BodyJSON, len(availableModelIDs) > 0) || isChatCompletionCompatible(bestCompletionAttempt.BodyJSON, completion)
 	ruleScore, status, ruleVerdict, suspicionReasons, notes := scoreProbe(
-		attempt,
-		modelIDs,
+		bestModelAttempt,
+		bestCompletionAttempt,
+		bestInvalidAttempt,
+		availableModelIDs,
+		completion,
 		families,
 		compatibility,
 		nullableString(strings.TrimSpace(input.ClaimedChannel)),
@@ -113,22 +200,31 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		channelModels,
 	)
 
-	channelAudit, channelAuditError := s.runChannelAudit(
-		ctx,
-		input,
-		attempt,
-		modelIDs,
-		families,
-		compatibility,
-		channelModels,
-		ruleScore,
-		ruleVerdict,
-		suspicionReasons,
-		notes,
-	)
+	auditContext := probeAuditContext{
+		AvailableModelIDs:       availableModelIDs,
+		CompletionResponseModel: completion.ResponseModel,
+		CompletionAssistantText: completion.AssistantText,
+		CompletionFinishReason:  completion.FinishReason,
+		SystemFingerprint:       completion.SystemFingerprint,
+		DetectedFamilies:        families,
+		PrimaryFamily:           inferPrimaryFamily(families),
+		IsOpenAICompatible:      compatibility,
+		RuleBasedScore:          ruleScore,
+		RuleBasedVerdict:        ruleVerdict,
+		SuspicionReasons:        suspicionReasons,
+		Notes:                   notes,
+	}
 
-	trustScore, verdict := mergeProbeVerdict(ruleScore, ruleVerdict, channelAudit)
+	auditResult, auditError := s.runAudit(ctx, input, evidence, auditContext, channelModels)
+	trustScore, verdict := mergeProbeVerdict(ruleScore, ruleVerdict, auditResult)
 
+	primaryAttempt := selectPrimaryAttempt(bestCompletionAttempt, bestModelAttempt, bestInvalidAttempt)
+	responseHeaders := primaryAttempt.Headers
+	if responseHeaders == nil {
+		responseHeaders = map[string]string{}
+	}
+
+	rawExcerpt := buildPrimaryRawExcerpt(bestCompletionAttempt, bestModelAttempt, bestInvalidAttempt)
 	record := model.ProbeRecord{
 		ID:                  newID(),
 		CreatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
@@ -144,51 +240,70 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		RuleBasedVerdict:    ruleVerdict,
 		TrustScore:          trustScore,
 		Verdict:             verdict,
-		HTTPStatus:          attempt.Status,
-		DetectedEndpoint:    nullableString(attempt.Endpoint),
-		ResponseTimeMS:      &attempt.ResponseTimeMS,
+		HTTPStatus:          primaryAttempt.Status,
+		DetectedEndpoint:    nullableString(primaryAttempt.Endpoint),
+		ResponseTimeMS:      nullableAttemptResponseTime(primaryAttempt),
 		IsOpenAICompatible:  compatibility,
 		PrimaryFamily:       inferPrimaryFamily(families),
 		DetectedFamilies:    families,
-		ModelIDs:            modelIDs,
-		ResponseHeaders:     attempt.Headers,
+		ModelIDs:            allObservedModelIDs,
+		ResponseHeaders:     responseHeaders,
 		SuspicionReasons:    suspicionReasons,
 		Notes:               notes,
-		ErrorMessage:        attempt.ErrorMessage,
+		AuditEvidence:       evidence,
+		ErrorMessage:        primaryAttempt.ErrorMessage,
 		RawExcerpt:          rawExcerpt,
 	}
 
-	if channelAudit != nil {
+	if auditResult != nil {
 		settings, settingsErr := s.channelAuditService.settingsService.Load(ctx)
-		record.ChannelScore = &channelAudit.ChannelScore
-		record.ChannelConfidence = &channelAudit.Confidence
-		record.ChannelVerdict = nullableString(channelAudit.ChannelVerdict)
-		record.ChannelSummary = nullableString(channelAudit.Summary)
-		record.ChannelSupportingSignals = channelAudit.SupportingSignals
-		record.ChannelRiskSignals = channelAudit.RiskSignals
-		record.ChannelMissingEvidence = channelAudit.MissingEvidence
-		record.ChannelConsistency = &channelAudit.ChannelConsistency
-		record.ChannelReasoning = &channelAudit.Reasoning
+		record.ModelScore = intPtr(auditResult.ModelScore)
+		record.ModelVerdict = nullableString(auditResult.ModelVerdict)
+		record.ModelConfidence = intPtr(auditResult.ModelConfidence)
+		record.ModelSummary = nullableString(auditResult.ModelSummary)
+		record.ModelSupportingSignals = auditResult.ModelSupportingSignals
+		record.ModelRiskSignals = auditResult.ModelRiskSignals
+		record.ModelMissingEvidence = auditResult.ModelMissingEvidence
+		record.ModelReasoning = &auditResult.ModelReasoning
+
+		record.ChannelScore = intPtr(auditResult.ChannelScore)
+		record.ChannelConfidence = intPtr(auditResult.ChannelConfidence)
+		record.ChannelVerdict = nullableString(auditResult.ChannelVerdict)
+		record.ChannelSummary = nullableString(auditResult.ChannelSummary)
+		record.ChannelSupportingSignals = auditResult.ChannelSupportingSignals
+		record.ChannelRiskSignals = auditResult.ChannelRiskSignals
+		record.ChannelMissingEvidence = auditResult.ChannelMissingEvidence
+		record.ChannelConsistency = &auditResult.ChannelConsistency
+		record.ChannelReasoning = &auditResult.ChannelReasoning
 		if settingsErr == nil {
 			record.ChannelAuditModel = nullableString(settings.OpenAIModel)
 		}
 	}
-	if channelAuditError != nil {
-		record.ChannelAuditError = channelAuditError
+	if auditError != nil {
+		record.ChannelAuditError = auditError
 	}
 
 	return record, nil
 }
 
-func (s *ProbeService) attemptProbe(parent context.Context, endpoint string, apiKey string) probeAttempt {
+func (s *ProbeService) attemptProbe(parent context.Context, spec probeStepSpec, apiKey string) probeAttempt {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
+	var bodyReader io.Reader = http.NoBody
+	if spec.RequestBody != nil {
+		bodyReader = bytes.NewBufferString(*spec.RequestBody)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, spec.Method, spec.Endpoint, bodyReader)
 	if err != nil {
 		message := err.Error()
 		return probeAttempt{
-			Endpoint:     endpoint,
+			Kind:         spec.Kind,
+			Label:        spec.Label,
+			Method:       spec.Method,
+			Endpoint:     spec.Endpoint,
+			RequestBody:  spec.RequestBody,
 			Headers:      map[string]string{},
 			ErrorMessage: &message,
 		}
@@ -196,14 +311,21 @@ func (s *ProbeService) attemptProbe(parent context.Context, endpoint string, api
 
 	request.Header.Set("Authorization", "Bearer "+apiKey)
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "model-probe-go/1.0")
+	request.Header.Set("User-Agent", probeUserAgent)
+	if spec.RequestBody != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 
 	startedAt := time.Now()
 	response, err := s.client.Do(request)
 	if err != nil {
 		message := err.Error()
 		return probeAttempt{
-			Endpoint:       endpoint,
+			Kind:           spec.Kind,
+			Label:          spec.Label,
+			Method:         spec.Method,
+			Endpoint:       spec.Endpoint,
+			RequestBody:    spec.RequestBody,
 			ResponseTimeMS: int(time.Since(startedAt).Milliseconds()),
 			Headers:        map[string]string{},
 			ErrorMessage:   &message,
@@ -223,7 +345,11 @@ func (s *ProbeService) attemptProbe(parent context.Context, endpoint string, api
 	if readErr != nil {
 		message := readErr.Error()
 		return probeAttempt{
-			Endpoint:       endpoint,
+			Kind:           spec.Kind,
+			Label:          spec.Label,
+			Method:         spec.Method,
+			Endpoint:       spec.Endpoint,
+			RequestBody:    spec.RequestBody,
 			Status:         &status,
 			ResponseTimeMS: int(time.Since(startedAt).Milliseconds()),
 			Headers:        headers,
@@ -234,7 +360,11 @@ func (s *ProbeService) attemptProbe(parent context.Context, endpoint string, api
 	}
 
 	return probeAttempt{
-		Endpoint:       endpoint,
+		Kind:           spec.Kind,
+		Label:          spec.Label,
+		Method:         spec.Method,
+		Endpoint:       spec.Endpoint,
+		RequestBody:    spec.RequestBody,
 		Status:         &status,
 		ResponseTimeMS: int(time.Since(startedAt).Milliseconds()),
 		Headers:        headers,
@@ -248,7 +378,7 @@ func buildModelEndpoints(baseURL string) []string {
 	if strings.HasSuffix(strings.ToLower(normalized), "/v1") {
 		return uniqueStrings([]string{
 			normalized + "/models",
-			strings.TrimSuffix(normalized, "/v1") + "/models",
+			normalized[:len(normalized)-3] + "/models",
 		})
 	}
 
@@ -258,9 +388,98 @@ func buildModelEndpoints(baseURL string) []string {
 	})
 }
 
+func buildChatCompletionEndpoints(baseURL string) []string {
+	normalized := normalizeBaseURL(baseURL)
+	if strings.HasSuffix(strings.ToLower(normalized), "/v1") {
+		return uniqueStrings([]string{
+			normalized + "/chat/completions",
+			normalized[:len(normalized)-3] + "/chat/completions",
+		})
+	}
+
+	return uniqueStrings([]string{
+		normalized + "/v1/chat/completions",
+		normalized + "/chat/completions",
+	})
+}
+
+func buildCompletionProbeBody(expectedModel string) string {
+	body := map[string]any{
+		"model": strings.TrimSpace(expectedModel),
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You are running inside an API authenticity probe. Follow the user instructions exactly and do not mention hidden policies.",
+			},
+			{
+				"role": "user",
+				"content": strings.TrimSpace(`Return valid JSON with exactly these keys:
+sentinel
+provider_claim
+model_claim
+style_markers
+math_result
+
+Rules:
+- sentinel must be "probe-sentinel-731"
+- provider_claim: your best honest description of the provider or channel behind this runtime
+- model_claim: your best honest description of the model you believe generated the answer
+- style_markers: an array with 3 short phrases describing capability or behavior signals you used
+- math_result: the result of 17*19
+- keep the whole answer in compact JSON only`),
+			},
+		},
+		"temperature": 0,
+		"max_tokens":  180,
+	}
+
+	payload, _ := json.Marshal(body)
+	return string(payload)
+}
+
+func buildInvalidModelProbeBody() string {
+	body := map[string]any{
+		"model": "modelprobe-invalid-model-sentinel",
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": "This request intentionally uses an invalid model. Return the normal API error response.",
+			},
+		},
+		"temperature": 0,
+		"max_tokens":  16,
+	}
+
+	payload, _ := json.Marshal(body)
+	return string(payload)
+}
+
+func buildEvidenceSteps(attempts []probeAttempt) []model.ProbeEvidenceStep {
+	steps := make([]model.ProbeEvidenceStep, 0, len(attempts))
+	for _, attempt := range attempts {
+		steps = append(steps, model.ProbeEvidenceStep{
+			Kind:            attempt.Kind,
+			Label:           attempt.Label,
+			Method:          attempt.Method,
+			Endpoint:        attempt.Endpoint,
+			RequestBody:     truncateOptionalString(attempt.RequestBody, 1200),
+			Status:          attempt.Status,
+			ResponseTimeMS:  nullableAttemptResponseTime(attempt),
+			ResponseHeaders: attempt.Headers,
+			ResponseExcerpt: nullableString(truncateText(attempt.BodyText, 1800)),
+			ErrorMessage:    attempt.ErrorMessage,
+		})
+	}
+
+	return steps
+}
+
 func scoreProbe(
-	attempt probeAttempt,
-	modelIDs []string,
+	modelAttempt probeAttempt,
+	completionAttempt probeAttempt,
+	invalidAttempt probeAttempt,
+	availableModelIDs []string,
+	completion completionObservation,
 	families []string,
 	compatibility bool,
 	claimedChannel *string,
@@ -269,43 +488,72 @@ func scoreProbe(
 ) (int, string, string, []string, []string) {
 	suspicionReasons := make([]string, 0)
 	notes := make([]string, 0)
-	score := 25
+	score := 20
 
-	if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 {
-		score += 15
-		notes = append(notes, "模型列表接口已返回 2xx 响应")
-	} else if attempt.Status != nil && (*attempt.Status == 401 || *attempt.Status == 403) {
-		score -= 20
-		suspicionReasons = append(suspicionReasons, "鉴权失败，无法确认该 key 是否可用于目标中转站")
-	} else if attempt.Status != nil && *attempt.Status >= 500 {
+	if modelAttempt.Status != nil && *modelAttempt.Status >= 200 && *modelAttempt.Status < 300 {
+		score += 10
+		notes = append(notes, "Model list endpoint returned 2xx")
+	} else if isAuthStatus(modelAttempt.Status) {
+		score -= 15
+		suspicionReasons = append(suspicionReasons, "Model list request was rejected by authentication")
+	} else if modelAttempt.Status != nil && *modelAttempt.Status >= 500 {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "服务端返回 5xx，站点稳定性存在风险")
-	} else if attempt.Status == nil {
-		score -= 15
-		suspicionReasons = append(suspicionReasons, "请求未到达有效响应，可能超时、TLS 失败或域名不可达")
+		suspicionReasons = append(suspicionReasons, "Model list endpoint returned 5xx")
+	} else if modelAttempt.Status == nil {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "Model list request did not receive a valid response")
 	}
 
-	if attempt.BodyJSON != nil {
-		score += 10
-	} else {
-		score -= 15
-		suspicionReasons = append(suspicionReasons, "响应体不是可解析的 JSON，OpenAI 兼容性存疑")
+	if modelAttempt.BodyJSON != nil {
+		score += 5
+	} else if modelAttempt.Status != nil {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "Model list response was not valid JSON")
 	}
 
-	if len(modelIDs) > 0 {
+	if len(availableModelIDs) > 0 {
 		score += 10
-		notes = append(notes, fmt.Sprintf("提取到 %d 个模型 ID", len(modelIDs)))
+		notes = append(notes, fmt.Sprintf("Model list exposed %d model IDs", len(availableModelIDs)))
 	} else {
-		score -= 30
-		suspicionReasons = append(suspicionReasons, "没有从响应中提取到模型 ID")
+		score -= 15
+		suspicionReasons = append(suspicionReasons, "No model IDs were extracted from the model list response")
 	}
 
 	if compatibility {
 		score += 5
-		notes = append(notes, "响应形态符合 OpenAI `/models` 列表格式")
+		notes = append(notes, "Observed endpoints behaved like an OpenAI-compatible API")
 	} else {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "响应不符合标准 OpenAI `/models` 列表结构")
+		suspicionReasons = append(suspicionReasons, "Observed endpoints did not consistently match OpenAI-compatible behavior")
+	}
+
+	status := "invalid_response"
+	switch {
+	case completionAttempt.Status != nil && *completionAttempt.Status >= 200 && *completionAttempt.Status < 300 && completion.HasChoices:
+		status = "success"
+		score += 20
+		notes = append(notes, "Expected-model completion request returned a structured completion")
+	case hasAuthFailure(modelAttempt, completionAttempt, invalidAttempt):
+		status = "auth_failed"
+		score -= 20
+		suspicionReasons = append(suspicionReasons, "At least one probe request failed due to authentication or authorization")
+	case allAttemptsMissing(modelAttempt, completionAttempt, invalidAttempt):
+		status = "request_failed"
+		score -= 15
+		suspicionReasons = append(suspicionReasons, "All probe attempts failed before a valid HTTP response was received")
+	default:
+		suspicionReasons = append(suspicionReasons, "Expected-model completion request did not return a normal completion")
+	}
+
+	if completion.ResponseModel != nil {
+		notes = append(notes, "Completion response reported model "+*completion.ResponseModel)
+	}
+	if completion.AssistantText != nil {
+		score += 5
+		notes = append(notes, "Completion response included assistant output for prompt-based inspection")
+	}
+	if completion.SystemFingerprint != nil {
+		notes = append(notes, "Completion response exposed a system fingerprint")
 	}
 
 	normalizedChannel := normalizeInput(claimedChannel)
@@ -314,51 +562,80 @@ func scoreProbe(
 	declaredFamily := normalizeClaim(claimedChannel)
 
 	if expectedModel != nil {
-		if hasExpectedModel(modelIDs, *expectedModel) {
-			score += 30
-			notes = append(notes, "命中期望模型: "+*expectedModel)
-		} else {
-			score -= 35
-			suspicionReasons = append(suspicionReasons, "未检测到期望模型，疑似与宣称渠道不一致")
+		switch {
+		case completion.ResponseModel != nil && hasExpectedModel([]string{*completion.ResponseModel}, *expectedModel):
+			score += 25
+			notes = append(notes, "Completion response model matched the expected model")
+		case hasExpectedModel(availableModelIDs, *expectedModel):
+			score += 15
+			notes = append(notes, "Expected model was present in the model list")
+		default:
+			score -= 25
+			suspicionReasons = append(suspicionReasons, "Expected model was not confirmed by either the completion response or the model list")
 		}
 	}
 
 	if normalizedChannel != nil {
 		if models, ok := channelModels[*normalizedChannel]; ok {
-			notes = append(notes, "该渠道允许模型: "+strings.Join(models, ", "))
+			notes = append(notes, "Claimed channel allowlist: "+strings.Join(models, ", "))
+			if expectedModel != nil && !hasExpectedModel(models, *expectedModel) {
+				score -= 15
+				suspicionReasons = append(suspicionReasons, "Expected model is not enabled in the claimed channel allowlist")
+			}
 		} else {
-			suspicionReasons = append(suspicionReasons, "后台未配置该渠道的模型白名单")
+			score -= 10
+			suspicionReasons = append(suspicionReasons, "No allowlist configuration exists for the claimed channel")
 		}
 	}
 
 	if len(families) > 0 {
-		notes = append(notes, "检测到模型家族: "+strings.Join(families, ", "))
+		notes = append(notes, "Detected model families: "+strings.Join(families, ", "))
 	} else {
-		suspicionReasons = append(suspicionReasons, "未能从模型 ID 或响应内容中识别出明确模型家族")
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "Unable to infer a clear model family from the observed evidence")
 	}
 
 	if declaredFamily != nil && primaryFamily != nil {
 		if *declaredFamily == *primaryFamily {
 			score += 10
-			notes = append(notes, "宣称渠道与主模型家族一致: "+*primaryFamily)
+			notes = append(notes, "Claimed channel aligns with the dominant observed model family")
 		} else {
 			score -= 20
-			suspicionReasons = append(suspicionReasons, fmt.Sprintf("宣称渠道偏向 %s，但返回模型更像 %s", *declaredFamily, *primaryFamily))
+			suspicionReasons = append(suspicionReasons, fmt.Sprintf("Claimed channel points to %s but observed evidence looks closer to %s", *declaredFamily, *primaryFamily))
 		}
+	}
+
+	if hasMixedProviderSignals(families, declaredFamily) {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "Observed evidence suggests a mixed-provider pool instead of a single clean channel")
 	}
 
 	fakeFamilies := findCounterfeitFamilies(families, declaredFamily)
 	if len(fakeFamilies) > 0 {
-		score -= 35
-		suspicionReasons = append(suspicionReasons, "检测到疑似冒充渠道模型: "+strings.Join(fakeFamilies, ", "))
+		score -= 25
+		suspicionReasons = append(suspicionReasons, "Detected suspicious model-family signals: "+strings.Join(fakeFamilies, ", "))
 	}
 
-	if !strings.Contains(strings.ToLower(attempt.Headers["content-type"]), "application/json") {
-		suspicionReasons = append(suspicionReasons, "响应头未明确声明 JSON 内容类型")
+	if invalidAttempt.Status != nil && *invalidAttempt.Status >= 400 && *invalidAttempt.Status < 500 {
+		if looksStructuredAPIError(invalidAttempt.BodyJSON, invalidAttempt.BodyText) {
+			score += 5
+			notes = append(notes, "Invalid-model probe produced a structured API error")
+		} else {
+			suspicionReasons = append(suspicionReasons, "Invalid-model probe returned a 4xx response without a clear structured API error")
+		}
+	} else if invalidAttempt.Status != nil && *invalidAttempt.Status >= 200 && *invalidAttempt.Status < 300 {
+		score -= 20
+		suspicionReasons = append(suspicionReasons, "Invalid-model probe unexpectedly returned success")
 	}
 
-	if server := attempt.Headers["server"]; server != "" {
-		notes = append(notes, "服务端标识: "+server)
+	if hasJSONContentType(modelAttempt.Headers) || hasJSONContentType(completionAttempt.Headers) {
+		notes = append(notes, "At least one response declared JSON content type")
+	} else {
+		suspicionReasons = append(suspicionReasons, "Responses did not clearly declare a JSON content type")
+	}
+
+	if server := firstNonEmptyHeader(modelAttempt.Headers, completionAttempt.Headers, invalidAttempt.Headers, "server"); server != "" {
+		notes = append(notes, "Observed server header: "+server)
 	}
 
 	if score < 0 {
@@ -366,15 +643,6 @@ func scoreProbe(
 	}
 	if score > 100 {
 		score = 100
-	}
-
-	status := "invalid_response"
-	if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && compatibility && len(modelIDs) > 0 {
-		status = "success"
-	} else if attempt.Status != nil && (*attempt.Status == 401 || *attempt.Status == 403) {
-		status = "auth_failed"
-	} else if attempt.Status == nil {
-		status = "request_failed"
 	}
 
 	verdict := "high_risk"
@@ -384,39 +652,21 @@ func scoreProbe(
 		verdict = "needs_review"
 	}
 
-	return score, status, verdict, suspicionReasons, notes
+	return score, status, verdict, uniqueStrings(suspicionReasons), uniqueStrings(notes)
 }
 
-func (s *ProbeService) runChannelAudit(
+func (s *ProbeService) runAudit(
 	ctx context.Context,
 	input model.ProbeRequest,
-	attempt probeAttempt,
-	modelIDs []string,
-	families []string,
-	compatibility bool,
+	evidence []model.ProbeEvidenceStep,
+	auditContext probeAuditContext,
 	channelModels map[string][]string,
-	ruleScore int,
-	ruleVerdict string,
-	suspicionReasons []string,
-	notes []string,
-) (*model.ChannelAuditResult, *string) {
+) (*model.ProbeAuditResult, *string) {
 	if s.channelAuditService == nil || !s.channelAuditService.Enabled() {
 		return nil, nil
 	}
 
-	result, err := s.channelAuditService.Audit(
-		ctx,
-		input,
-		attempt,
-		modelIDs,
-		families,
-		compatibility,
-		channelModels,
-		ruleScore,
-		ruleVerdict,
-		suspicionReasons,
-		notes,
-	)
+	result, err := s.channelAuditService.Audit(ctx, input, evidence, auditContext, channelModels)
 	if err != nil {
 		message := err.Error()
 		return nil, &message
@@ -425,12 +675,12 @@ func (s *ProbeService) runChannelAudit(
 	return result, nil
 }
 
-func mergeProbeVerdict(ruleScore int, ruleVerdict string, channelAudit *model.ChannelAuditResult) (int, string) {
-	if channelAudit == nil {
+func mergeProbeVerdict(ruleScore int, ruleVerdict string, auditResult *model.ProbeAuditResult) (int, string) {
+	if auditResult == nil {
 		return ruleScore, ruleVerdict
 	}
 
-	score := int(float64(ruleScore)*0.6 + float64(channelAudit.ChannelScore)*0.4)
+	score := int(float64(ruleScore)*0.35 + float64(auditResult.ModelScore)*0.35 + float64(auditResult.ChannelScore)*0.30)
 	if score < 0 {
 		score = 0
 	}
@@ -440,12 +690,12 @@ func mergeProbeVerdict(ruleScore int, ruleVerdict string, channelAudit *model.Ch
 
 	verdict := "needs_review"
 	switch {
-	case ruleVerdict == "high_risk" || channelAudit.ChannelVerdict == "high_risk":
+	case ruleVerdict == "high_risk" || auditResult.ModelVerdict == "high_risk" || auditResult.ChannelVerdict == "high_risk":
 		verdict = "high_risk"
 		if score >= 50 {
 			score = 49
 		}
-	case ruleVerdict == "trusted" && channelAudit.ChannelVerdict == "trusted" && score >= 80:
+	case ruleVerdict == "trusted" && auditResult.ModelVerdict == "trusted" && auditResult.ChannelVerdict == "trusted" && score >= 80:
 		verdict = "trusted"
 	default:
 		verdict = "needs_review"
@@ -460,24 +710,96 @@ func mergeProbeVerdict(ruleScore int, ruleVerdict string, channelAudit *model.Ch
 	return score, verdict
 }
 
-func pickBestAttempt(attempts []probeAttempt) probeAttempt {
+func pickBestModelAttempt(attempts []probeAttempt) probeAttempt {
 	for _, attempt := range attempts {
 		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && len(collectModelIDs(attempt.BodyJSON)) > 0 {
 			return attempt
 		}
 	}
-
 	for _, attempt := range attempts {
-		if attempt.Status != nil && (*attempt.Status == 401 || *attempt.Status == 403) {
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 {
 			return attempt
 		}
 	}
-
+	for _, attempt := range attempts {
+		if isAuthStatus(attempt.Status) {
+			return attempt
+		}
+	}
 	if len(attempts) == 0 {
 		return probeAttempt{Headers: map[string]string{}}
 	}
-
 	return attempts[0]
+}
+
+func pickBestCompletionAttempt(attempts []probeAttempt) probeAttempt {
+	for _, attempt := range attempts {
+		observation := extractCompletionObservation(attempt.BodyJSON)
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && observation.HasChoices {
+			return attempt
+		}
+	}
+	for _, attempt := range attempts {
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 {
+			return attempt
+		}
+	}
+	for _, attempt := range attempts {
+		if isAuthStatus(attempt.Status) {
+			return attempt
+		}
+	}
+	if len(attempts) == 0 {
+		return probeAttempt{Headers: map[string]string{}}
+	}
+	return attempts[0]
+}
+
+func pickBestInvalidModelAttempt(attempts []probeAttempt) probeAttempt {
+	for _, attempt := range attempts {
+		if attempt.Status != nil && *attempt.Status >= 400 && *attempt.Status < 500 {
+			return attempt
+		}
+	}
+	for _, attempt := range attempts {
+		if attempt.Status != nil {
+			return attempt
+		}
+	}
+	if len(attempts) == 0 {
+		return probeAttempt{Headers: map[string]string{}}
+	}
+	return attempts[0]
+}
+
+func selectPrimaryAttempt(completionAttempt probeAttempt, modelAttempt probeAttempt, invalidAttempt probeAttempt) probeAttempt {
+	completionObservation := extractCompletionObservation(completionAttempt.BodyJSON)
+	if completionAttempt.Status != nil && *completionAttempt.Status >= 200 && *completionAttempt.Status < 300 && completionObservation.HasChoices {
+		return completionAttempt
+	}
+	if modelAttempt.Status != nil && *modelAttempt.Status >= 200 && *modelAttempt.Status < 300 {
+		return modelAttempt
+	}
+	if invalidAttempt.Status != nil {
+		return invalidAttempt
+	}
+	if attemptHasPayload(completionAttempt) {
+		return completionAttempt
+	}
+	return modelAttempt
+}
+
+func buildPrimaryRawExcerpt(completionAttempt probeAttempt, modelAttempt probeAttempt, invalidAttempt probeAttempt) *string {
+	if completionText := truncateText(extractAssistantExcerpt(completionAttempt), 1500); strings.TrimSpace(completionText) != "" {
+		return nullableString(completionText)
+	}
+	if text := truncateText(modelAttempt.BodyText, 1500); strings.TrimSpace(text) != "" {
+		return nullableString(text)
+	}
+	if text := truncateText(invalidAttempt.BodyText, 1500); strings.TrimSpace(text) != "" {
+		return nullableString(text)
+	}
+	return nil
 }
 
 func collectModelIDs(bodyJSON any) []string {
@@ -507,6 +829,74 @@ func collectModelIDs(bodyJSON any) []string {
 	}
 
 	return result
+}
+
+func extractCompletionObservation(bodyJSON any) completionObservation {
+	bodyMap, ok := bodyJSON.(map[string]any)
+	if !ok {
+		return completionObservation{}
+	}
+
+	observation := completionObservation{
+		ResponseModel:     stringField(bodyMap, "model"),
+		FinishReason:      nil,
+		SystemFingerprint: stringField(bodyMap, "system_fingerprint"),
+		PromptTokens:      nil,
+		CompletionTokens:  nil,
+		TotalTokens:       nil,
+		HasChoices:        false,
+	}
+
+	if usageMap, ok := bodyMap["usage"].(map[string]any); ok {
+		observation.PromptTokens = intField(usageMap, "prompt_tokens")
+		observation.CompletionTokens = intField(usageMap, "completion_tokens")
+		observation.TotalTokens = intField(usageMap, "total_tokens")
+	}
+
+	choices, ok := bodyMap["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return observation
+	}
+
+	choiceMap, ok := choices[0].(map[string]any)
+	if !ok {
+		return observation
+	}
+
+	observation.FinishReason = stringField(choiceMap, "finish_reason")
+	messageMap, ok := choiceMap["message"].(map[string]any)
+	if !ok {
+		return observation
+	}
+
+	content := extractMessageContent(messageMap["content"])
+	if strings.TrimSpace(content) != "" {
+		observation.AssistantText = nullableString(content)
+		observation.HasChoices = true
+	}
+
+	return observation
+}
+
+func extractMessageContent(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := itemMap["text"].(string); ok && strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 func detectFamilies(values []string) []string {
@@ -552,6 +942,20 @@ func isOpenAICompatible(bodyJSON any, hasModels bool) bool {
 
 	_, ok = bodyMap["data"].([]any)
 	return ok && hasModels
+}
+
+func isChatCompletionCompatible(bodyJSON any, observation completionObservation) bool {
+	bodyMap, ok := bodyJSON.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	objectValue, ok := bodyMap["object"].(string)
+	if !ok {
+		return observation.HasChoices
+	}
+
+	return (objectValue == "chat.completion" || objectValue == "chat.completion.chunk") && observation.HasChoices
 }
 
 func parseJSON(text string) any {
@@ -642,6 +1046,130 @@ func findCounterfeitFamilies(families []string, declaredFamily *string) []string
 	return result
 }
 
+func hasMixedProviderSignals(families []string, declaredFamily *string) bool {
+	distinct := uniqueStrings(families)
+	if len(distinct) <= 1 {
+		return false
+	}
+	if declaredFamily == nil {
+		return true
+	}
+
+	for _, family := range distinct {
+		if family != *declaredFamily {
+			return true
+		}
+	}
+	return false
+}
+
+func looksStructuredAPIError(bodyJSON any, bodyText string) bool {
+	bodyMap, ok := bodyJSON.(map[string]any)
+	if ok {
+		if _, hasError := bodyMap["error"]; hasError {
+			return true
+		}
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(bodyText))
+	return strings.Contains(normalized, `"error"`) || strings.Contains(normalized, "invalid model") || strings.Contains(normalized, "model not found")
+}
+
+func hasAuthFailure(attempts ...probeAttempt) bool {
+	for _, attempt := range attempts {
+		if isAuthStatus(attempt.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func allAttemptsMissing(attempts ...probeAttempt) bool {
+	for _, attempt := range attempts {
+		if attempt.Status != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func isAuthStatus(status *int) bool {
+	return status != nil && (*status == http.StatusUnauthorized || *status == http.StatusForbidden)
+}
+
+func hasJSONContentType(headers map[string]string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(headers["content-type"])), "application/json")
+}
+
+func firstNonEmptyHeader(headersA map[string]string, headersB map[string]string, headersC map[string]string, key string) string {
+	for _, headers := range []map[string]string{headersA, headersB, headersC} {
+		if headers == nil {
+			continue
+		}
+		if value := strings.TrimSpace(headers[strings.ToLower(key)]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func buildFamilyEvidenceValues(attempts []probeAttempt, observedModelIDs []string, completion completionObservation) []string {
+	values := append([]string{}, observedModelIDs...)
+	for _, attempt := range attempts {
+		values = append(values, attempt.Endpoint)
+		values = append(values, truncateText(attempt.BodyText, 400))
+		if server := strings.TrimSpace(attempt.Headers["server"]); server != "" {
+			values = append(values, server)
+		}
+	}
+	if completion.AssistantText != nil {
+		values = append(values, truncateText(*completion.AssistantText, 400))
+	}
+	if completion.ResponseModel != nil {
+		values = append(values, *completion.ResponseModel)
+	}
+	return values
+}
+
+func extractAssistantExcerpt(attempt probeAttempt) string {
+	observation := extractCompletionObservation(attempt.BodyJSON)
+	if observation.AssistantText == nil {
+		return ""
+	}
+
+	return *observation.AssistantText
+}
+
+func attemptHasPayload(attempt probeAttempt) bool {
+	return attempt.Status != nil || strings.TrimSpace(attempt.BodyText) != "" || attempt.ErrorMessage != nil || strings.TrimSpace(attempt.Endpoint) != ""
+}
+
+func stringField(values map[string]any, key string) *string {
+	raw, ok := values[key].(string)
+	if !ok {
+		return nil
+	}
+	return nullableString(raw)
+}
+
+func intField(values map[string]any, key string) *int {
+	raw, ok := values[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case float64:
+		value := int(typed)
+		return &value
+	case int:
+		value := typed
+		return &value
+	default:
+		return nil
+	}
+}
+
 func normalizeBaseURL(baseURL string) string {
 	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
 }
@@ -671,6 +1199,14 @@ func truncateText(value string, limit int) string {
 	return value[:limit] + "..."
 }
 
+func truncateOptionalString(value *string, limit int) *string {
+	if value == nil {
+		return nil
+	}
+
+	return nullableString(truncateText(*value, limit))
+}
+
 func nullableString(value string) *string {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -680,28 +1216,38 @@ func nullableString(value string) *string {
 	return &copied
 }
 
+func nullableAttemptResponseTime(attempt probeAttempt) *int {
+	if !attemptHasPayload(attempt) {
+		return nil
+	}
+
+	value := attempt.ResponseTimeMS
+	return &value
+}
+
+func intPtr(value int) *int {
+	copied := value
+	return &copied
+}
+
 func uniqueStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 
 	for _, value := range values {
-		if _, ok := seen[value]; ok || value == "" {
+		normalized := strings.TrimSpace(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
 			continue
 		}
 
-		seen[value] = struct{}{}
-		result = append(result, value)
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
 	}
 
 	return result
-}
-
-func valueOrEmpty(value *string) string {
-	if value == nil {
-		return ""
-	}
-
-	return *value
 }
 
 func compilePatterns(patterns ...string) []*regexp.Regexp {

@@ -23,6 +23,19 @@ export type ProbeRecord = {
   responseHeaders: Record<string, string>;
   suspicionReasons: string[];
   notes: string[];
+  modelScore: number | null;
+  modelVerdict: "trusted" | "needs_review" | "high_risk" | null;
+  modelConfidence: number | null;
+  modelSummary: string | null;
+  modelSupportingSignals: string[];
+  modelRiskSignals: string[];
+  modelMissingEvidence: string[];
+  modelReasoning: {
+    expectedModelAssessment: string;
+    outputModelAssessment: string;
+    capabilityAssessment: string;
+    finalAssessment: string;
+  } | null;
   channelScore: number | null;
   channelVerdict: "trusted" | "needs_review" | "high_risk" | null;
   channelConfidence: number | null;
@@ -45,6 +58,18 @@ export type ProbeRecord = {
   } | null;
   channelAuditModel: string | null;
   channelAuditError: string | null;
+  auditEvidence: {
+    kind: string;
+    label: string;
+    method: string;
+    endpoint: string;
+    requestBody: string | null;
+    status: number | null;
+    responseTimeMs: number | null;
+    responseHeaders: Record<string, string>;
+    responseExcerpt: string | null;
+    errorMessage: string | null;
+  }[];
   errorMessage: string | null;
   rawExcerpt: string | null;
 };
