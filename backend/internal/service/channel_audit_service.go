@@ -22,6 +22,7 @@ Your job is to judge two things separately:
 Rules:
 - Never trust branding text, self-report alone, or marketing claims.
 - Use strongest evidence first: completion response model field, invalid-model error behavior, model list, headers, endpoint paths, and prompt-response behavior.
+- Treat structured self-report from the target model as weak-but-useful evidence. It can help reveal mixed pools, wrapper routing, or non-Claude families, but it is never decisive on its own.
 - A technically usable generic OpenAI-compatible wrapper is not enough to prove the claimed channel identity.
 - Distinguish insufficient evidence from contradictory evidence. If uncertain, return needs_review and list missing evidence.
 - Be strict about mixed-provider pools, model relabeling, and claimed-channel mismatch.
@@ -170,6 +171,17 @@ func buildProbeAuditUserPrompt(
 			"detectedFamilies":        auditContext.DetectedFamilies,
 			"primaryFamily":           valueOrEmpty(auditContext.PrimaryFamily),
 			"isOpenAICompatible":      auditContext.IsOpenAICompatible,
+			"providerGuess":           valueOrEmpty(auditContext.ProviderGuess),
+			"modelFamilyGuess":        valueOrEmpty(auditContext.ModelFamilyGuess),
+			"channelIdentityGuess":    valueOrEmpty(auditContext.ChannelIdentityGuess),
+			"selfReportConfidence":    intValueOrNil(auditContext.SelfReportConfidence),
+			"alternativeCandidates":   auditContext.AlternativeCandidates,
+			"evidenceMarkers":         auditContext.EvidenceMarkers,
+			"routingRisk":             valueOrEmpty(auditContext.RoutingRisk),
+			"mathResult":              valueOrEmpty(auditContext.MathResult),
+			"bilingualStyle":          valueOrEmpty(auditContext.BilingualStyle),
+			"codePatchStyle":          valueOrEmpty(auditContext.CodePatchStyle),
+			"honestyCheck":            valueOrEmpty(auditContext.HonestyCheck),
 		},
 		"ruleBasedAnalysis": map[string]any{
 			"score":            auditContext.RuleBasedScore,
@@ -188,12 +200,13 @@ You must answer both tracks:
 1. Model authenticity:
 - Does the endpoint appear to route the requested model honestly?
 - Is there evidence of fallback, relabeling, mixed routing, or fake identity?
-- How strong is the evidence from completion response model, prompt response, model list, and invalid-model behavior?
+- How strong is the evidence from completion response model, structured self-report, prompt response, model list, and invalid-model behavior?
 
 2. Channel authenticity:
 - Does claimedChannel match the exposed model pool?
 - Does claimedChannel match endpoint behavior and error semantics?
 - Does this look like a generic wrapper or a mixed-provider pool instead of a real channel identity?
+- Does the structured self-report suggest anthropic/claude, or does it point toward kiro/glm/moonshot/other routing?
 
 Return:
 - one verdict/score/confidence/summary for model authenticity
@@ -384,6 +397,14 @@ func extractResponseOutputText(body []byte) (string, error) {
 func valueOrEmpty(value *string) string {
 	if value == nil {
 		return ""
+	}
+
+	return *value
+}
+
+func intValueOrNil(value *int) any {
+	if value == nil {
+		return nil
 	}
 
 	return *value

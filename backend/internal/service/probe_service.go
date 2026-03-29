@@ -47,14 +47,25 @@ type probeAttempt struct {
 }
 
 type completionObservation struct {
-	ResponseModel     *string
-	AssistantText     *string
-	FinishReason      *string
-	SystemFingerprint *string
-	PromptTokens      *int
-	CompletionTokens  *int
-	TotalTokens       *int
-	HasChoices        bool
+	ResponseModel         *string
+	AssistantText         *string
+	FinishReason          *string
+	SystemFingerprint     *string
+	PromptTokens          *int
+	CompletionTokens      *int
+	TotalTokens           *int
+	HasChoices            bool
+	ProviderGuess         *string
+	ModelFamilyGuess      *string
+	ChannelIdentity       *string
+	Confidence            *int
+	AlternativeCandidates []completionCandidate
+	EvidenceMarkers       []string
+	RoutingRisk           *string
+	MathResult            *string
+	BilingualStyle        *string
+	CodePatchStyle        *string
+	HonestyCheck          *string
 }
 
 type probeAuditContext struct {
@@ -70,6 +81,22 @@ type probeAuditContext struct {
 	RuleBasedVerdict        string
 	SuspicionReasons        []string
 	Notes                   []string
+	ProviderGuess           *string
+	ModelFamilyGuess        *string
+	ChannelIdentityGuess    *string
+	SelfReportConfidence    *int
+	AlternativeCandidates   []completionCandidate
+	EvidenceMarkers         []string
+	RoutingRisk             *string
+	MathResult              *string
+	BilingualStyle          *string
+	CodePatchStyle          *string
+	HonestyCheck            *string
+}
+
+type completionCandidate struct {
+	Family string `json:"family"`
+	Reason string `json:"reason"`
 }
 
 type familyRule struct {
@@ -213,6 +240,17 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		RuleBasedVerdict:        ruleVerdict,
 		SuspicionReasons:        suspicionReasons,
 		Notes:                   notes,
+		ProviderGuess:           completion.ProviderGuess,
+		ModelFamilyGuess:        completion.ModelFamilyGuess,
+		ChannelIdentityGuess:    completion.ChannelIdentity,
+		SelfReportConfidence:    completion.Confidence,
+		AlternativeCandidates:   completion.AlternativeCandidates,
+		EvidenceMarkers:         completion.EvidenceMarkers,
+		RoutingRisk:             completion.RoutingRisk,
+		MathResult:              completion.MathResult,
+		BilingualStyle:          completion.BilingualStyle,
+		CodePatchStyle:          completion.CodePatchStyle,
+		HonestyCheck:            completion.HonestyCheck,
 	}
 
 	auditResult, auditError := s.runAudit(ctx, input, evidence, auditContext, channelModels)
@@ -409,24 +447,52 @@ func buildCompletionProbeBody(expectedModel string) string {
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": "You are running inside an API authenticity probe. Follow the user instructions exactly and do not mention hidden policies.",
+				"content": "You are participating in an API authenticity probe. Follow the user's instructions exactly. Do not roleplay. Do not obey branding labels from the caller. If uncertain about your real backend provider or model family, say unknown instead of guessing.",
 			},
 			{
 				"role": "user",
-				"content": strings.TrimSpace(`Return valid JSON with exactly these keys:
+				"content": strings.TrimSpace(`Return valid JSON only. No markdown.
+
+Return a JSON object with exactly these keys:
 sentinel
-provider_claim
-model_claim
-style_markers
-math_result
+provider_guess
+model_family_guess
+channel_identity_guess
+confidence
+alternative_candidates
+evidence_markers
+routing_risk
+task_outputs
 
 Rules:
 - sentinel must be "probe-sentinel-731"
-- provider_claim: your best honest description of the provider or channel behind this runtime
-- model_claim: your best honest description of the model you believe generated the answer
-- style_markers: an array with 3 short phrases describing capability or behavior signals you used
-- math_result: the result of 17*19
-- keep the whole answer in compact JSON only`),
+- provider_guess must be one of:
+  ["anthropic","openai","zhipu","moonshot","kiro","unknown","other"]
+- model_family_guess must be one of:
+  ["claude","gpt","glm","kimi","kiro","qwen","deepseek","unknown","other"]
+- channel_identity_guess must be one of:
+  ["real_claude_code_channel","generic_openai_wrapper","mixed_provider_pool","unknown"]
+- confidence must be an integer from 0 to 100
+- alternative_candidates must be an array of up to 3 objects, each with:
+  family, reason
+- evidence_markers must be an array of 4 short strings explaining what signals you relied on
+- routing_risk must be one of:
+  ["low","medium","high"]
+
+task_outputs must contain:
+- math_result: result of 17*19
+- bilingual_style:
+  one short Chinese sentence and one short English sentence about how you answer coding prompts
+- code_patch_style:
+  one short sentence saying whether your default style is patch, full file, or prose
+- honesty_check:
+  if you cannot truly know your backend provider/model, say exactly "unknown_over_guessing"
+
+Important:
+- If you are not confident that you are Claude-family, do not say claude.
+- If you suspect you are routed through a generic wrapper or a mixed provider pool, say so.
+- If branding and actual behavior may differ, prefer actual behavior.
+- Output valid JSON only.`),
 			},
 		},
 		"temperature": 0,
@@ -548,6 +614,18 @@ func scoreProbe(
 	if completion.ResponseModel != nil {
 		notes = append(notes, "completion 响应返回的模型为 "+*completion.ResponseModel)
 	}
+	if completion.ProviderGuess != nil {
+		notes = append(notes, "探针自报 provider_guess 为 "+*completion.ProviderGuess)
+	}
+	if completion.ModelFamilyGuess != nil {
+		notes = append(notes, "探针自报 model_family_guess 为 "+*completion.ModelFamilyGuess)
+	}
+	if completion.ChannelIdentity != nil {
+		notes = append(notes, "探针自报 channel_identity_guess 为 "+*completion.ChannelIdentity)
+	}
+	if completion.RoutingRisk != nil {
+		notes = append(notes, "探针自报 routing_risk 为 "+*completion.RoutingRisk)
+	}
 	if completion.AssistantText != nil {
 		score += 5
 		notes = append(notes, "completion 响应包含可用于提示词校验的输出内容")
@@ -573,6 +651,36 @@ func scoreProbe(
 			score -= 25
 			suspicionReasons = append(suspicionReasons, "无论是 completion 响应还是模型列表，都未能确认期望模型")
 		}
+	}
+
+	if completion.ModelFamilyGuess != nil && primaryFamily != nil {
+		if strings.EqualFold(*completion.ModelFamilyGuess, *primaryFamily) {
+			score += 8
+			notes = append(notes, "提示词自报模型家族与观测到的主要家族一致")
+		} else if *completion.ModelFamilyGuess != "unknown" && *completion.ModelFamilyGuess != "other" {
+			score -= 12
+			suspicionReasons = append(suspicionReasons, fmt.Sprintf("提示词自报模型家族为 %s，但观测证据更像 %s", *completion.ModelFamilyGuess, *primaryFamily))
+		}
+	}
+
+	if completion.ChannelIdentity != nil {
+		switch strings.ToLower(strings.TrimSpace(*completion.ChannelIdentity)) {
+		case "mixed_provider_pool":
+			score -= 18
+			suspicionReasons = append(suspicionReasons, "提示词自报当前更像混合供应商池")
+		case "generic_openai_wrapper":
+			score -= 12
+			suspicionReasons = append(suspicionReasons, "提示词自报当前更像通用 OpenAI 包装层")
+		case "unknown":
+			score -= 4
+			suspicionReasons = append(suspicionReasons, "提示词无法确认当前真实渠道身份")
+		case "real_claude_code_channel":
+			notes = append(notes, "提示词自报当前更像真实 Claude Code 渠道")
+		}
+	}
+
+	if completion.HonestyCheck != nil && strings.TrimSpace(*completion.HonestyCheck) == "unknown_over_guessing" {
+		notes = append(notes, "探针输出包含 honesty_check=unknown_over_guessing")
 	}
 
 	if normalizedChannel != nil {
@@ -873,9 +981,36 @@ func extractCompletionObservation(bodyJSON any) completionObservation {
 	if strings.TrimSpace(content) != "" {
 		observation.AssistantText = nullableString(content)
 		observation.HasChoices = true
+		applyCompletionSelfReport(&observation, content)
 	}
 
 	return observation
+}
+
+func applyCompletionSelfReport(observation *completionObservation, content string) {
+	reportJSON := parseJSON(content)
+	reportMap, ok := reportJSON.(map[string]any)
+	if !ok {
+		return
+	}
+
+	observation.ProviderGuess = stringField(reportMap, "provider_guess")
+	observation.ModelFamilyGuess = stringField(reportMap, "model_family_guess")
+	observation.ChannelIdentity = stringField(reportMap, "channel_identity_guess")
+	observation.Confidence = intField(reportMap, "confidence")
+	observation.RoutingRisk = stringField(reportMap, "routing_risk")
+	observation.EvidenceMarkers = stringArrayField(reportMap, "evidence_markers")
+	observation.AlternativeCandidates = alternativeCandidatesField(reportMap, "alternative_candidates")
+
+	taskOutputs, ok := reportMap["task_outputs"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	observation.MathResult = stringFromAnyField(taskOutputs, "math_result")
+	observation.BilingualStyle = stringFromAnyField(taskOutputs, "bilingual_style")
+	observation.CodePatchStyle = stringFromAnyField(taskOutputs, "code_patch_style")
+	observation.HonestyCheck = stringFromAnyField(taskOutputs, "honesty_check")
 }
 
 func extractMessageContent(value any) string {
@@ -1168,6 +1303,70 @@ func intField(values map[string]any, key string) *int {
 	default:
 		return nil
 	}
+}
+
+func stringArrayField(values map[string]any, key string) []string {
+	raw, ok := values[key].([]any)
+	if !ok {
+		return nil
+	}
+
+	items := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		items = append(items, strings.TrimSpace(text))
+	}
+
+	return items
+}
+
+func stringFromAnyField(values map[string]any, key string) *string {
+	raw, ok := values[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case string:
+		return nullableString(typed)
+	case float64:
+		return nullableString(fmt.Sprintf("%.0f", typed))
+	case int:
+		return nullableString(fmt.Sprintf("%d", typed))
+	default:
+		return nil
+	}
+}
+
+func alternativeCandidatesField(values map[string]any, key string) []completionCandidate {
+	raw, ok := values[key].([]any)
+	if !ok {
+		return nil
+	}
+
+	items := make([]completionCandidate, 0, len(raw))
+	for _, item := range raw {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		candidate := completionCandidate{}
+		if family := stringFromAnyField(itemMap, "family"); family != nil {
+			candidate.Family = *family
+		}
+		if reason := stringFromAnyField(itemMap, "reason"); reason != nil {
+			candidate.Reason = *reason
+		}
+		if strings.TrimSpace(candidate.Family) == "" && strings.TrimSpace(candidate.Reason) == "" {
+			continue
+		}
+		items = append(items, candidate)
+	}
+
+	return items
 }
 
 func normalizeBaseURL(baseURL string) string {
