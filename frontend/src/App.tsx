@@ -319,7 +319,7 @@ function ProbePage() {
                 {result.probe.suspicionReasons.length > 0 ? (
                   <ul>
                     {result.probe.suspicionReasons.map((item) => (
-                      <li key={item}>{item}</li>
+                      <li key={item}>{formatSuspicionReason(item)}</li>
                     ))}
                   </ul>
                 ) : (
@@ -1084,6 +1084,46 @@ function formatVerdictLabel(value: string): string {
   if (normalized === "needs_review") {
     return "待复核";
   }
+  return value;
+}
+
+function formatSuspicionReason(value: string): string {
+  const translations: Record<string, string> = {
+    "Model list request was rejected by authentication": "模型列表请求未通过鉴权",
+    "Model list endpoint returned 5xx": "模型列表接口返回 5xx",
+    "Model list request did not receive a valid response": "模型列表请求未收到有效响应",
+    "Model list response was not valid JSON": "模型列表响应不是合法 JSON",
+    "No model IDs were extracted from the model list response": "未能从模型列表响应中提取模型 ID",
+    "Observed endpoints did not consistently match OpenAI-compatible behavior": "观测到的接口行为与 OpenAI 兼容 API 不一致",
+    "At least one probe request failed due to authentication or authorization": "至少有一个探测请求因鉴权失败被拒绝",
+    "All probe attempts failed before a valid HTTP response was received": "所有探测请求都在收到有效 HTTP 响应前失败",
+    "Expected-model completion request did not return a normal completion": "期望模型的 completion 请求未返回正常结果",
+    "Expected model was not confirmed by either the completion response or the model list": "无论是 completion 响应还是模型列表，都未能确认期望模型",
+    "Expected model is not enabled in the claimed channel allowlist": "期望模型不在宣称渠道的启用白名单中",
+    "No allowlist configuration exists for the claimed channel": "宣称渠道没有配置白名单",
+    "Unable to infer a clear model family from the observed evidence": "无法从观测证据中推断出明确的模型家族",
+    "Observed evidence suggests a mixed-provider pool instead of a single clean channel": "观测证据更像混合供应商池，而不是单一干净渠道",
+    "Invalid-model probe returned a 4xx response without a clear structured API error": "错误模型探测虽然返回 4xx，但没有清晰的结构化 API 错误",
+    "Invalid-model probe unexpectedly returned success": "错误模型探测异常返回成功",
+    "Responses did not clearly declare a JSON content type": "响应头未明确声明 JSON 内容类型",
+  };
+
+  if (translations[value]) {
+    return translations[value];
+  }
+
+  const mismatch = value.match(
+    /^Claimed channel points to (.+) but observed evidence looks closer to (.+)$/,
+  );
+  if (mismatch) {
+    return `宣称渠道更接近 ${mismatch[1]}，但观测证据更像 ${mismatch[2]}`;
+  }
+
+  const suspiciousFamilyPrefix = "Detected suspicious model-family signals: ";
+  if (value.startsWith(suspiciousFamilyPrefix)) {
+    return `检测到可疑的模型家族信号: ${value.slice(suspiciousFamilyPrefix.length)}`;
+  }
+
   return value;
 }
 

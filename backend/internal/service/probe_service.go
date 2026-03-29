@@ -492,39 +492,39 @@ func scoreProbe(
 
 	if modelAttempt.Status != nil && *modelAttempt.Status >= 200 && *modelAttempt.Status < 300 {
 		score += 10
-		notes = append(notes, "Model list endpoint returned 2xx")
+		notes = append(notes, "模型列表接口返回 2xx")
 	} else if isAuthStatus(modelAttempt.Status) {
 		score -= 15
-		suspicionReasons = append(suspicionReasons, "Model list request was rejected by authentication")
+		suspicionReasons = append(suspicionReasons, "模型列表请求未通过鉴权")
 	} else if modelAttempt.Status != nil && *modelAttempt.Status >= 500 {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Model list endpoint returned 5xx")
+		suspicionReasons = append(suspicionReasons, "模型列表接口返回 5xx")
 	} else if modelAttempt.Status == nil {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Model list request did not receive a valid response")
+		suspicionReasons = append(suspicionReasons, "模型列表请求未收到有效响应")
 	}
 
 	if modelAttempt.BodyJSON != nil {
 		score += 5
 	} else if modelAttempt.Status != nil {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Model list response was not valid JSON")
+		suspicionReasons = append(suspicionReasons, "模型列表响应不是合法 JSON")
 	}
 
 	if len(availableModelIDs) > 0 {
 		score += 10
-		notes = append(notes, fmt.Sprintf("Model list exposed %d model IDs", len(availableModelIDs)))
+		notes = append(notes, fmt.Sprintf("模型列表暴露了 %d 个模型 ID", len(availableModelIDs)))
 	} else {
 		score -= 15
-		suspicionReasons = append(suspicionReasons, "No model IDs were extracted from the model list response")
+		suspicionReasons = append(suspicionReasons, "未能从模型列表响应中提取模型 ID")
 	}
 
 	if compatibility {
 		score += 5
-		notes = append(notes, "Observed endpoints behaved like an OpenAI-compatible API")
+		notes = append(notes, "观测到的接口行为与 OpenAI 兼容 API 相符")
 	} else {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Observed endpoints did not consistently match OpenAI-compatible behavior")
+		suspicionReasons = append(suspicionReasons, "观测到的接口行为与 OpenAI 兼容 API 不一致")
 	}
 
 	status := "invalid_response"
@@ -532,28 +532,28 @@ func scoreProbe(
 	case completionAttempt.Status != nil && *completionAttempt.Status >= 200 && *completionAttempt.Status < 300 && completion.HasChoices:
 		status = "success"
 		score += 20
-		notes = append(notes, "Expected-model completion request returned a structured completion")
+		notes = append(notes, "期望模型的 completion 请求返回了结构化响应")
 	case hasAuthFailure(modelAttempt, completionAttempt, invalidAttempt):
 		status = "auth_failed"
 		score -= 20
-		suspicionReasons = append(suspicionReasons, "At least one probe request failed due to authentication or authorization")
+		suspicionReasons = append(suspicionReasons, "至少有一个探测请求因鉴权失败被拒绝")
 	case allAttemptsMissing(modelAttempt, completionAttempt, invalidAttempt):
 		status = "request_failed"
 		score -= 15
-		suspicionReasons = append(suspicionReasons, "All probe attempts failed before a valid HTTP response was received")
+		suspicionReasons = append(suspicionReasons, "所有探测请求都在收到有效 HTTP 响应前失败")
 	default:
-		suspicionReasons = append(suspicionReasons, "Expected-model completion request did not return a normal completion")
+		suspicionReasons = append(suspicionReasons, "期望模型的 completion 请求未返回正常结果")
 	}
 
 	if completion.ResponseModel != nil {
-		notes = append(notes, "Completion response reported model "+*completion.ResponseModel)
+		notes = append(notes, "completion 响应返回的模型为 "+*completion.ResponseModel)
 	}
 	if completion.AssistantText != nil {
 		score += 5
-		notes = append(notes, "Completion response included assistant output for prompt-based inspection")
+		notes = append(notes, "completion 响应包含可用于提示词校验的输出内容")
 	}
 	if completion.SystemFingerprint != nil {
-		notes = append(notes, "Completion response exposed a system fingerprint")
+		notes = append(notes, "completion 响应暴露了 system fingerprint")
 	}
 
 	normalizedChannel := normalizeInput(claimedChannel)
@@ -565,77 +565,77 @@ func scoreProbe(
 		switch {
 		case completion.ResponseModel != nil && hasExpectedModel([]string{*completion.ResponseModel}, *expectedModel):
 			score += 25
-			notes = append(notes, "Completion response model matched the expected model")
+			notes = append(notes, "completion 响应模型与期望模型一致")
 		case hasExpectedModel(availableModelIDs, *expectedModel):
 			score += 15
-			notes = append(notes, "Expected model was present in the model list")
+			notes = append(notes, "模型列表中存在期望模型")
 		default:
 			score -= 25
-			suspicionReasons = append(suspicionReasons, "Expected model was not confirmed by either the completion response or the model list")
+			suspicionReasons = append(suspicionReasons, "无论是 completion 响应还是模型列表，都未能确认期望模型")
 		}
 	}
 
 	if normalizedChannel != nil {
 		if models, ok := channelModels[*normalizedChannel]; ok {
-			notes = append(notes, "Claimed channel allowlist: "+strings.Join(models, ", "))
+			notes = append(notes, "宣称渠道白名单: "+strings.Join(models, ", "))
 			if expectedModel != nil && !hasExpectedModel(models, *expectedModel) {
 				score -= 15
-				suspicionReasons = append(suspicionReasons, "Expected model is not enabled in the claimed channel allowlist")
+				suspicionReasons = append(suspicionReasons, "期望模型不在宣称渠道的启用白名单中")
 			}
 		} else {
 			score -= 10
-			suspicionReasons = append(suspicionReasons, "No allowlist configuration exists for the claimed channel")
+			suspicionReasons = append(suspicionReasons, "宣称渠道没有配置白名单")
 		}
 	}
 
 	if len(families) > 0 {
-		notes = append(notes, "Detected model families: "+strings.Join(families, ", "))
+		notes = append(notes, "识别到的模型家族: "+strings.Join(families, ", "))
 	} else {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Unable to infer a clear model family from the observed evidence")
+		suspicionReasons = append(suspicionReasons, "无法从观测证据中推断出明确的模型家族")
 	}
 
 	if declaredFamily != nil && primaryFamily != nil {
 		if *declaredFamily == *primaryFamily {
 			score += 10
-			notes = append(notes, "Claimed channel aligns with the dominant observed model family")
+			notes = append(notes, "宣称渠道与主要观测模型家族一致")
 		} else {
 			score -= 20
-			suspicionReasons = append(suspicionReasons, fmt.Sprintf("Claimed channel points to %s but observed evidence looks closer to %s", *declaredFamily, *primaryFamily))
+			suspicionReasons = append(suspicionReasons, fmt.Sprintf("宣称渠道更接近 %s，但观测证据更像 %s", *declaredFamily, *primaryFamily))
 		}
 	}
 
 	if hasMixedProviderSignals(families, declaredFamily) {
 		score -= 10
-		suspicionReasons = append(suspicionReasons, "Observed evidence suggests a mixed-provider pool instead of a single clean channel")
+		suspicionReasons = append(suspicionReasons, "观测证据更像混合供应商池，而不是单一干净渠道")
 	}
 
 	fakeFamilies := findCounterfeitFamilies(families, declaredFamily)
 	if len(fakeFamilies) > 0 {
 		score -= 25
-		suspicionReasons = append(suspicionReasons, "Detected suspicious model-family signals: "+strings.Join(fakeFamilies, ", "))
+		suspicionReasons = append(suspicionReasons, "检测到可疑的模型家族信号: "+strings.Join(fakeFamilies, ", "))
 	}
 
 	if invalidAttempt.Status != nil && *invalidAttempt.Status >= 400 && *invalidAttempt.Status < 500 {
 		if looksStructuredAPIError(invalidAttempt.BodyJSON, invalidAttempt.BodyText) {
 			score += 5
-			notes = append(notes, "Invalid-model probe produced a structured API error")
+			notes = append(notes, "错误模型探测返回了结构化 API 错误")
 		} else {
-			suspicionReasons = append(suspicionReasons, "Invalid-model probe returned a 4xx response without a clear structured API error")
+			suspicionReasons = append(suspicionReasons, "错误模型探测虽然返回 4xx，但没有清晰的结构化 API 错误")
 		}
 	} else if invalidAttempt.Status != nil && *invalidAttempt.Status >= 200 && *invalidAttempt.Status < 300 {
 		score -= 20
-		suspicionReasons = append(suspicionReasons, "Invalid-model probe unexpectedly returned success")
+		suspicionReasons = append(suspicionReasons, "错误模型探测异常返回成功")
 	}
 
 	if hasJSONContentType(modelAttempt.Headers) || hasJSONContentType(completionAttempt.Headers) {
-		notes = append(notes, "At least one response declared JSON content type")
+		notes = append(notes, "至少有一个响应声明了 JSON 内容类型")
 	} else {
-		suspicionReasons = append(suspicionReasons, "Responses did not clearly declare a JSON content type")
+		suspicionReasons = append(suspicionReasons, "响应头未明确声明 JSON 内容类型")
 	}
 
 	if server := firstNonEmptyHeader(modelAttempt.Headers, completionAttempt.Headers, invalidAttempt.Headers, "server"); server != "" {
-		notes = append(notes, "Observed server header: "+server)
+		notes = append(notes, "观测到的服务端标识: "+server)
 	}
 
 	if score < 0 {
