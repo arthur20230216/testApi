@@ -978,9 +978,9 @@ function AdminConsole({
                     }))
                   }
                 >
-                  <option value="trusted">trusted</option>
-                  <option value="needs_review">needs_review</option>
-                  <option value="high_risk">high_risk</option>
+                  <option value="trusted">可信</option>
+                  <option value="needs_review">待复核</option>
+                  <option value="high_risk">高风险</option>
                 </select>
               </label>
               <label>

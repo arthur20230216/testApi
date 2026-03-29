@@ -290,7 +290,7 @@ function ProbePage() {
           {result ? (
             <div className="result-stack">
               <div className={`verdict-chip ${result.probe.verdict}`}>
-                <span>{result.probe.verdict}</span>
+                <span>{formatVerdictLabel(result.probe.verdict)}</span>
                 <strong>{result.probe.trustScore} / 100</strong>
               </div>
               <div className="result-grid">
@@ -332,14 +332,20 @@ function ProbePage() {
                   <article>
                     <span>Model Audit</span>
                     <strong>
-                      {result.probe.modelVerdict ?? "not_run"} /{" "}
+                      {result.probe.modelVerdict
+                        ? formatVerdictLabel(result.probe.modelVerdict)
+                        : "not_run"}{" "}
+                      /{" "}
                       {result.probe.modelScore ?? "-"}
                     </strong>
                   </article>
                   <article>
                     <span>Channel Audit</span>
                     <strong>
-                      {result.probe.channelVerdict ?? "not_run"} /{" "}
+                      {result.probe.channelVerdict
+                        ? formatVerdictLabel(result.probe.channelVerdict)
+                        : "not_run"}{" "}
+                      /{" "}
                       {result.probe.channelScore ?? "-"}
                     </strong>
                   </article>
@@ -439,7 +445,7 @@ function ProbePage() {
                 <p>{item.baseUrl}</p>
               </div>
               <div className={`mini-verdict ${item.verdict}`}>
-                {item.verdict}
+                {formatVerdictLabel(item.verdict)}
               </div>
               <div>
                 <span>{item.primaryFamily ?? "未识别"}</span>
@@ -858,9 +864,9 @@ export function AdminPage() {
                       }))
                     }
                   >
-                    <option value="trusted">trusted</option>
-                    <option value="needs_review">needs_review</option>
-                    <option value="high_risk">high_risk</option>
+                    <option value="trusted">可信</option>
+                    <option value="needs_review">待复核</option>
+                    <option value="high_risk">高风险</option>
                   </select>
                 </label>
                 <label>
@@ -1065,6 +1071,20 @@ function normalizeVerdict(value: string): ProbeManualUpdateRequest["verdict"] {
     return normalized;
   }
   return "needs_review";
+}
+
+function formatVerdictLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "trusted") {
+    return "可信";
+  }
+  if (normalized === "high_risk") {
+    return "高风险";
+  }
+  if (normalized === "needs_review") {
+    return "待复核";
+  }
+  return value;
 }
 
 function parseRoute(hash: string): RouteType {
