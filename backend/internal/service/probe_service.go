@@ -62,10 +62,14 @@ type completionObservation struct {
 	AlternativeCandidates []completionCandidate
 	EvidenceMarkers       []string
 	RoutingRisk           *string
+	Sentinel              *string
 	MathResult            *string
 	BilingualStyle        *string
 	CodePatchStyle        *string
 	HonestyCheck          *string
+	SelfReportParsed      bool
+	SelfReportValid       bool
+	SelfReportIssues      []string
 }
 
 type probeAuditContext struct {
@@ -628,6 +632,22 @@ func scoreProbe(
 	}
 	if completion.AssistantText != nil {
 		score += 5
+		if completion.SelfReportParsed {
+			score += 8
+			notes = append(notes, "probe response returned valid JSON")
+		} else {
+			score -= 15
+			suspicionReasons = append(suspicionReasons, "probe prompt required JSON but the returned content was not valid JSON")
+		}
+		if completion.SelfReportValid {
+			score += 12
+			notes = append(notes, "probe response passed content-task validation")
+		} else if len(completion.SelfReportIssues) > 0 {
+			score -= 18
+			for _, issue := range completion.SelfReportIssues {
+				suspicionReasons = append(suspicionReasons, "content probe anomaly: "+issue)
+			}
+		}
 		notes = append(notes, "completion 响应包含可用于提示词校验的输出内容")
 	}
 	if completion.SystemFingerprint != nil {
@@ -681,6 +701,17 @@ func scoreProbe(
 
 	if completion.HonestyCheck != nil && strings.TrimSpace(*completion.HonestyCheck) == "unknown_over_guessing" {
 		notes = append(notes, "探针输出包含 honesty_check=unknown_over_guessing")
+	}
+
+	if completion.Confidence != nil {
+		notes = append(notes, fmt.Sprintf("probe self-report confidence=%d", *completion.Confidence))
+		if completion.ModelFamilyGuess != nil &&
+			*completion.ModelFamilyGuess != "unknown" &&
+			*completion.ModelFamilyGuess != "other" &&
+			*completion.Confidence < 45 {
+			score -= 8
+			suspicionReasons = append(suspicionReasons, "content probe made a concrete family claim at low confidence")
+		}
 	}
 
 	if normalizedChannel != nil {
@@ -991,9 +1022,14 @@ func applyCompletionSelfReport(observation *completionObservation, content strin
 	reportJSON := parseJSON(content)
 	reportMap, ok := reportJSON.(map[string]any)
 	if !ok {
+		observation.SelfReportParsed = false
+		observation.SelfReportValid = false
+		observation.SelfReportIssues = append(observation.SelfReportIssues, "probe response did not return valid JSON")
 		return
 	}
 
+	observation.SelfReportParsed = true
+	observation.Sentinel = stringField(reportMap, "sentinel")
 	observation.ProviderGuess = stringField(reportMap, "provider_guess")
 	observation.ModelFamilyGuess = stringField(reportMap, "model_family_guess")
 	observation.ChannelIdentity = stringField(reportMap, "channel_identity_guess")
@@ -1011,6 +1047,59 @@ func applyCompletionSelfReport(observation *completionObservation, content strin
 	observation.BilingualStyle = stringFromAnyField(taskOutputs, "bilingual_style")
 	observation.CodePatchStyle = stringFromAnyField(taskOutputs, "code_patch_style")
 	observation.HonestyCheck = stringFromAnyField(taskOutputs, "honesty_check")
+	observation.SelfReportIssues = validateCompletionSelfReport(*observation)
+	observation.SelfReportValid = len(observation.SelfReportIssues) == 0
+}
+
+func validateCompletionSelfReport(observation completionObservation) []string {
+	issues := make([]string, 0)
+
+	if observation.Sentinel == nil || strings.TrimSpace(*observation.Sentinel) != "probe-sentinel-731" {
+		issues = append(issues, "probe response missing expected sentinel")
+	}
+	if observation.Confidence == nil {
+		issues = append(issues, "probe response missing confidence")
+	}
+	if len(observation.EvidenceMarkers) != 4 {
+		issues = append(issues, "probe response did not return 4 evidence markers")
+	}
+	if observation.MathResult == nil || strings.TrimSpace(*observation.MathResult) != "323" {
+		issues = append(issues, "probe response returned the wrong math_result")
+	}
+	if observation.HonestyCheck == nil || strings.TrimSpace(*observation.HonestyCheck) != "unknown_over_guessing" {
+		issues = append(issues, "probe response failed the honesty_check requirement")
+	}
+	if observation.BilingualStyle == nil || !containsChineseAndEnglish(*observation.BilingualStyle) {
+		issues = append(issues, "probe response failed the bilingual_style requirement")
+	}
+	if observation.CodePatchStyle == nil || !mentionsExpectedPatchStyle(*observation.CodePatchStyle) {
+		issues = append(issues, "probe response failed the code_patch_style requirement")
+	}
+
+	return issues
+}
+
+func containsChineseAndEnglish(value string) bool {
+	hasChinese := false
+	hasEnglish := false
+
+	for _, r := range value {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			hasChinese = true
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasEnglish = true
+		}
+	}
+
+	return hasChinese && hasEnglish
+}
+
+func mentionsExpectedPatchStyle(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(normalized, "patch") ||
+		strings.Contains(normalized, "full file") ||
+		strings.Contains(normalized, "prose")
 }
 
 func extractMessageContent(value any) string {
