@@ -327,7 +327,10 @@ function ProbePage() {
                 )}
               </div>
 
-              {result.probe.modelVerdict || result.probe.channelVerdict ? (
+              {result.probe.modelVerdict ||
+              result.probe.channelVerdict ||
+              result.probe.channelAuditError ||
+              result.probe.channelAuditModel ? (
                 <div className="result-grid">
                   <article>
                     <span>Model Audit</span>
@@ -350,7 +353,7 @@ function ProbePage() {
                     </strong>
                   </article>
                   <article>
-                    <span>Audit Evidence</span>
+                    <span>Probe Steps</span>
                     <strong>{result.probe.auditEvidence.length}</strong>
                   </article>
                   <article>
@@ -360,9 +363,17 @@ function ProbePage() {
                 </div>
               ) : null}
 
-              {result.probe.modelSummary || result.probe.channelSummary ? (
+              {result.probe.modelSummary ||
+              result.probe.channelSummary ||
+              result.probe.channelAuditError ? (
                 <div className="list-block">
                   <h3>AI Audit Summary</h3>
+                  <p>
+                    The AI audit is based on the real probe responses captured
+                    during detection. The audit model call itself uses the
+                    admin System Settings OpenAI Base URL, not the target
+                    station unless you configured it that way.
+                  </p>
                   {result.probe.modelSummary ? (
                     <p>
                       <strong>Model:</strong> {result.probe.modelSummary}
@@ -385,6 +396,12 @@ function ProbePage() {
               {result.probe.auditEvidence.length > 0 ? (
                 <div className="list-block">
                   <h3>调用记录</h3>
+                  <p>
+                    The records below are the real HTTP probe requests sent to
+                    the target Base URL, including model-list and
+                    chat-completion probes. They do not include the separate AI
+                    audit call to the configured OpenAI-compatible endpoint.
+                  </p>
                   <div className="evidence-list">
                     {result.probe.auditEvidence.map((step, index) => (
                       <article
