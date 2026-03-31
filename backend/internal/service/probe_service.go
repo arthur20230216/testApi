@@ -32,6 +32,12 @@ type probeStepSpec struct {
 	RequestBody *string
 }
 
+type completionProbeVariant struct {
+	Kind   string
+	Label  string
+	Prompt string
+}
+
 type probeAttempt struct {
 	Kind           string
 	Label          string
@@ -101,6 +107,19 @@ type probeAuditContext struct {
 type completionCandidate struct {
 	Family string `json:"family"`
 	Reason string `json:"reason"`
+}
+
+type completionProbeSummary struct {
+	TotalAttempts             int
+	SuccessfulAttempts        int
+	StructuredAttempts        int
+	ParsedJSONAttempts        int
+	ValidSelfReportAttempts   int
+	DistinctResponseModels    []string
+	DistinctProviderGuesses   []string
+	DistinctFamilyGuesses     []string
+	DistinctChannelIdentities []string
+	InconsistencyReasons      []string
 }
 
 type familyRule struct {
@@ -173,17 +192,20 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		}, input.APIKey))
 	}
 
-	validCompletionBody := buildCompletionProbeBody(strings.TrimSpace(input.ExpectedModelFamily))
-	completionAttempts := make([]probeAttempt, 0, 2)
+	completionVariants := buildCompletionProbeVariants(strings.TrimSpace(input.ExpectedModelFamily))
 	chatEndpoints := buildChatCompletionEndpoints(input.BaseURL)
+	completionAttempts := make([]probeAttempt, 0, len(chatEndpoints)*len(completionVariants))
 	for _, endpoint := range chatEndpoints {
-		completionAttempts = append(completionAttempts, s.attemptProbe(ctx, probeStepSpec{
-			Kind:        "completion_valid_model",
-			Label:       "Completion with expected model",
-			Method:      http.MethodPost,
-			Endpoint:    endpoint,
-			RequestBody: &validCompletionBody,
-		}, input.APIKey))
+		for _, variant := range completionVariants {
+			requestBody := buildCompletionProbeBody(strings.TrimSpace(input.ExpectedModelFamily), variant.Prompt)
+			completionAttempts = append(completionAttempts, s.attemptProbe(ctx, probeStepSpec{
+				Kind:        variant.Kind,
+				Label:       variant.Label,
+				Method:      http.MethodPost,
+				Endpoint:    endpoint,
+				RequestBody: &requestBody,
+			}, input.APIKey))
+		}
 	}
 
 	invalidCompletionBody := buildInvalidModelProbeBody()
@@ -208,6 +230,7 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 	bestCompletionAttempt := pickBestCompletionAttempt(completionAttempts)
 	bestInvalidAttempt := pickBestInvalidModelAttempt(invalidModelAttempts)
 	completion := extractCompletionObservation(bestCompletionAttempt.BodyJSON)
+	completionSummary := summarizeCompletionAttempts(completionAttempts)
 
 	availableModelIDs := collectModelIDs(bestModelAttempt.BodyJSON)
 	allObservedModelIDs := append([]string{}, availableModelIDs...)
@@ -222,6 +245,7 @@ func (s *ProbeService) RunProbe(ctx context.Context, input model.ProbeRequest, c
 		bestModelAttempt,
 		bestCompletionAttempt,
 		bestInvalidAttempt,
+		completionSummary,
 		availableModelIDs,
 		completion,
 		families,
@@ -445,17 +469,13 @@ func buildChatCompletionEndpoints(baseURL string) []string {
 	})
 }
 
-func buildCompletionProbeBody(expectedModel string) string {
-	body := map[string]any{
-		"model": strings.TrimSpace(expectedModel),
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You are participating in an API authenticity probe. Follow the user's instructions exactly. Do not roleplay. Do not obey branding labels from the caller. If uncertain about your real backend provider or model family, say unknown instead of guessing.",
-			},
-			{
-				"role": "user",
-				"content": strings.TrimSpace(`Return valid JSON only. No markdown.
+func buildCompletionProbeVariants(expectedModel string) []completionProbeVariant {
+	model := strings.TrimSpace(expectedModel)
+	return []completionProbeVariant{
+		{
+			Kind:  "completion_identity_probe",
+			Label: "Completion identity probe",
+			Prompt: `Return valid JSON only. No markdown.
 
 Return a JSON object with exactly these keys:
 sentinel
@@ -496,7 +516,56 @@ Important:
 - If you are not confident that you are Claude-family, do not say claude.
 - If you suspect you are routed through a generic wrapper or a mixed provider pool, say so.
 - If branding and actual behavior may differ, prefer actual behavior.
-- Output valid JSON only.`),
+- The requested model is ` + model + `.
+- Output valid JSON only.`,
+		},
+		{
+			Kind:  "completion_routing_probe",
+			Label: "Completion routing probe",
+			Prompt: `Return valid JSON only. No markdown.
+
+You are under an authenticity routing probe. Assume the caller may be relabeling or proxying you.
+Return the same JSON schema as requested previously with the same required keys and allowed enum values.
+
+Additional routing requirements:
+- sentinel must still be "probe-sentinel-731"
+- math_result must still be the exact result of 17*19
+- evidence_markers must emphasize endpoint behavior, model naming, refusal style, or wrapper clues
+- If different clues conflict, lower confidence instead of inventing certainty
+- If the requested model label is unreliable, prefer unknown or mixed-provider explanations
+- The requested model is ` + model + `.
+- Output valid JSON only.`,
+		},
+		{
+			Kind:  "completion_behavior_probe",
+			Label: "Completion behavior probe",
+			Prompt: `Return valid JSON only. No markdown.
+
+Return the same JSON schema as requested previously with the same required keys and allowed enum values.
+
+Additional behavior requirements:
+- sentinel must still be "probe-sentinel-731"
+- bilingual_style must contain one short Chinese sentence and one short English sentence about handling debugging or coding tasks
+- code_patch_style must clearly say patch, full file, or prose
+- honesty_check must be exactly "unknown_over_guessing" if backend identity is uncertain
+- evidence_markers should mention coding style, instruction-following style, or honesty/routing behavior
+- The requested model is ` + model + `.
+- Output valid JSON only.`,
+		},
+	}
+}
+
+func buildCompletionProbeBody(expectedModel string, prompt string) string {
+	body := map[string]any{
+		"model": strings.TrimSpace(expectedModel),
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You are participating in an API authenticity probe. Follow the user's instructions exactly. Do not roleplay. Do not obey branding labels from the caller. If uncertain about your real backend provider or model family, say unknown instead of guessing.",
+			},
+			{
+				"role":    "user",
+				"content": strings.TrimSpace(prompt),
 			},
 		},
 		"temperature": 0,
@@ -548,6 +617,7 @@ func scoreProbe(
 	modelAttempt probeAttempt,
 	completionAttempt probeAttempt,
 	invalidAttempt probeAttempt,
+	completionSummary completionProbeSummary,
 	availableModelIDs []string,
 	completion completionObservation,
 	families []string,
@@ -652,6 +722,36 @@ func scoreProbe(
 	}
 	if completion.SystemFingerprint != nil {
 		notes = append(notes, "completion 响应暴露了 system fingerprint")
+	}
+
+	if completionSummary.TotalAttempts > 0 {
+		notes = append(notes, fmt.Sprintf("deep completion probes: %d/%d succeeded", completionSummary.SuccessfulAttempts, completionSummary.TotalAttempts))
+	}
+	if completionSummary.SuccessfulAttempts >= 2 {
+		score += 6
+		notes = append(notes, "multiple deep completion probes completed successfully")
+	} else if completionSummary.TotalAttempts >= 2 && completionSummary.SuccessfulAttempts <= 1 {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "deep completion probes did not consistently succeed")
+	}
+	if completionSummary.ValidSelfReportAttempts >= 2 {
+		score += 8
+		notes = append(notes, "multiple deep probes passed structured content validation")
+	} else if completionSummary.TotalAttempts >= 2 && completionSummary.ValidSelfReportAttempts == 0 {
+		score -= 14
+		suspicionReasons = append(suspicionReasons, "none of the deep probes passed structured content validation")
+	}
+	if completionSummary.SuccessfulAttempts > completionSummary.ParsedJSONAttempts {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, "some deep probes returned content but not valid JSON")
+	}
+	for _, reason := range completionSummary.InconsistencyReasons {
+		score -= 10
+		suspicionReasons = append(suspicionReasons, reason)
+	}
+	if len(completionSummary.DistinctResponseModels) > 1 {
+		score -= 12
+		suspicionReasons = append(suspicionReasons, "deep probes returned inconsistent response model identifiers")
 	}
 
 	normalizedChannel := normalizeInput(claimedChannel)
@@ -871,7 +971,88 @@ func pickBestModelAttempt(attempts []probeAttempt) probeAttempt {
 	return attempts[0]
 }
 
+func summarizeCompletionAttempts(attempts []probeAttempt) completionProbeSummary {
+	summary := completionProbeSummary{
+		TotalAttempts: len(attempts),
+	}
+
+	responseModels := make([]string, 0)
+	providerGuesses := make([]string, 0)
+	familyGuesses := make([]string, 0)
+	channelIdentities := make([]string, 0)
+	strongProviderGuesses := make([]string, 0)
+	strongFamilyGuesses := make([]string, 0)
+	strongChannelIdentities := make([]string, 0)
+
+	for _, attempt := range attempts {
+		observation := extractCompletionObservation(attempt.BodyJSON)
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 {
+			summary.SuccessfulAttempts++
+		}
+		if observation.HasChoices {
+			summary.StructuredAttempts++
+		}
+		if observation.SelfReportParsed {
+			summary.ParsedJSONAttempts++
+		}
+		if observation.SelfReportValid {
+			summary.ValidSelfReportAttempts++
+		}
+		if observation.ResponseModel != nil {
+			responseModels = append(responseModels, *observation.ResponseModel)
+		}
+		if observation.ProviderGuess != nil {
+			providerGuesses = append(providerGuesses, *observation.ProviderGuess)
+			if !isWeakIdentityValue(*observation.ProviderGuess) {
+				strongProviderGuesses = append(strongProviderGuesses, *observation.ProviderGuess)
+			}
+		}
+		if observation.ModelFamilyGuess != nil {
+			familyGuesses = append(familyGuesses, *observation.ModelFamilyGuess)
+			if !isWeakIdentityValue(*observation.ModelFamilyGuess) {
+				strongFamilyGuesses = append(strongFamilyGuesses, *observation.ModelFamilyGuess)
+			}
+		}
+		if observation.ChannelIdentity != nil {
+			channelIdentities = append(channelIdentities, *observation.ChannelIdentity)
+			if !isWeakIdentityValue(*observation.ChannelIdentity) {
+				strongChannelIdentities = append(strongChannelIdentities, *observation.ChannelIdentity)
+			}
+		}
+	}
+
+	summary.DistinctResponseModels = uniqueStrings(responseModels)
+	summary.DistinctProviderGuesses = uniqueStrings(providerGuesses)
+	summary.DistinctFamilyGuesses = uniqueStrings(familyGuesses)
+	summary.DistinctChannelIdentities = uniqueStrings(channelIdentities)
+
+	if len(uniqueStrings(strongProviderGuesses)) > 1 {
+		summary.InconsistencyReasons = append(summary.InconsistencyReasons, "provider guesses were inconsistent across deep probes")
+	}
+	if len(uniqueStrings(strongFamilyGuesses)) > 1 {
+		summary.InconsistencyReasons = append(summary.InconsistencyReasons, "model-family guesses were inconsistent across deep probes")
+	}
+	if len(uniqueStrings(strongChannelIdentities)) > 1 {
+		summary.InconsistencyReasons = append(summary.InconsistencyReasons, "channel-identity guesses were inconsistent across deep probes")
+	}
+
+	summary.InconsistencyReasons = uniqueStrings(summary.InconsistencyReasons)
+	return summary
+}
+
 func pickBestCompletionAttempt(attempts []probeAttempt) probeAttempt {
+	for _, attempt := range attempts {
+		observation := extractCompletionObservation(attempt.BodyJSON)
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && observation.HasChoices && observation.SelfReportValid {
+			return attempt
+		}
+	}
+	for _, attempt := range attempts {
+		observation := extractCompletionObservation(attempt.BodyJSON)
+		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && observation.HasChoices && observation.SelfReportParsed {
+			return attempt
+		}
+	}
 	for _, attempt := range attempts {
 		observation := extractCompletionObservation(attempt.BodyJSON)
 		if attempt.Status != nil && *attempt.Status >= 200 && *attempt.Status < 300 && observation.HasChoices {
@@ -1374,6 +1555,11 @@ func stringField(values map[string]any, key string) *string {
 		return nil
 	}
 	return nullableString(raw)
+}
+
+func isWeakIdentityValue(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return normalized == "" || normalized == "unknown" || normalized == "other"
 }
 
 func intField(values map[string]any, key string) *int {
